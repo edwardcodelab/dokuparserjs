@@ -315,27 +315,27 @@ class DokuParserJS {
             // Detect start: Any leading {2,} spaces, not in other block.
             // Accumulate until de-indent; strip indent on output.
             // Edge: Last line indented → flush at EOF. Mixed indent → partial pre.
-            if (!inPre && line.match(/^( {2,})/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer);  // Close prior.
-                inPre = true;
-                preBuffer = [];
-            }
-            if (inPre) {
-                preBuffer.push(line);  // Accumulate raw.
-                if (!line.match(/^( {2,})/)) {  // De-indent: Flush.
-                    let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');  // Strip indent, join.
-                    result.push('<pre>' + preContent + '</pre>');  // No rules—preserve whitespace.
-                    inPre = false;
-                    preBuffer = [];
-                }
+           // if (!inPre && line.match(/^( {2,})/)) {
+           //     this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer);  // Close prior.
+            //    inPre = true;
+           //     preBuffer = [];
+           // }
+           // if (inPre) {
+           //     preBuffer.push(line);  // Accumulate raw.
+           //     if (!line.match(/^( {2,})/)) {  // De-indent: Flush.
+           //         let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');  // Strip indent, join.
+            //        result.push('<pre>' + preContent + '</pre>');  // No rules—preserve whitespace.
+            //        inPre = false;
+            //        preBuffer = [];
+            //    }
                 // EOF check: Flush open pre.
-                if (i === lines.length - 1 && inPre) {
-                    let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
-                    result.push('<pre>' + preContent + '</pre>');
-                    inPre = false;
-                }
-                continue;
-            }
+           //     if (i === lines.length - 1 && inPre) {
+          //          let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
+          //          result.push('<pre>' + preContent + '</pre>');
+         //           inPre = false;
+         //       }
+        //        continue;
+        //    }
 
             // ===== CODE BLOCK: <code> or <file> tags =====
             // Tagged blocks: Accumulate raw lines until </code>.
@@ -783,4 +783,5 @@ if (typeof module !== 'undefined' && module.exports) {
             preview.innerHTML = parser.parse(window.rawContent);  // Render.
         }
     });
+
 }
