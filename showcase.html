@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DokuParserJS Showcase</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 20px; max-width: 800px; }
+        h1, h2, h3, h4, h5, h6 { color: #333; }
+        ul, ol { margin-left: 20px; }
+        blockquote { border-left: 4px solid #ccc; margin: 0 0 20px 20px; padding-left: 15px; font-style: italic; }
+        table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        pre { background: #f8f9fa; padding: 10px; border-left: 3px solid #007bff; overflow-x: auto; }
+        img { max-width: 100%; height: auto; }
+        .left { float: left; margin-right: 10px; }
+        .right { float: right; margin-left: 10px; }
+        .center { display: block; margin: 0 auto; }
+        .footnotes { font-size: 0.9em; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px; }
+        sup a { text-decoration: none; color: #007bff; }
+    </style>
+</head>
+<body>
+    <h1>DokuParserJS Showcase</h1>
+    <p>This page demonstrates all supported syntax elements rendered from DokuWiki markup using the <code>DokuParserJS</code> library.</p>
+    
+    <h2>Rendered Output</h2>
+    <div id="output"></div>
+
+    <!-- Load the parser library -->
+    <script src="dokuparserjs.js"></script>
+    
+    <script>
+        // Pre-set comprehensive DokuWiki markup covering all supported syntax.
+        const showcaseMarkup = `
+====== Header 1 ======
+===== Header 2 ====
+==== Header 3 ===
+=== Header 4 ==
+== Header 5 =
+= Header 6 =
+
+**Bold text**, //italic text//, __underlined text__, ''monospace text'', <sub>subscript</sub>, <sup>superscript</sup>, <del>deleted text</del>.
+
+Internal link: [[ns1:ns2:page|Namespaced Page]]. Relative: [[.:sibling|Sibling]], [[..:parent|Parent]], [[ : |Start Page]].
+External: [[https://example.com|External Link]].
+Interwiki: [[wp>DokuWiki|Wikipedia]].
+Email: <user@example.com>.
+
+{{ :ns:example.jpg?200x100|Alt text left }} {{right| :ns:example.jpg?50x50 }} {{ :ns:example.jpg |Centered}}.
+
+^ Header Col 1 ^ Header Col 2 ^ Multi-Col ^
+| Col 1 | [[link|Cell Link]] | ::Spanned Cell ::
+| :::: Continued Row : | Normal Cell |
+
+  Indented preformatted text
+  with multiple lines.
+
+<code>
+Tagged code block
+with **literal** markup.
+</code>
+
+> Blockquote level 1
+>> Nested level 2
+> Back to level 1.
+
+Text with ((inline footnote 1)). Another ((footnote 2 in list * item)).
+
+* Unordered list item 1
+  * Nested unordered
+* Item 2 with ((footnote))
+
+- Ordered list item 1
+  - Nested ordered
+- Item 2
+
+----
+Horizontal rule above this.
+
+<nowiki>Raw <nowiki> or [[link]] stays literal.</nowiki>
+%%Escaped %%special%% chars.%%
+
+:-) Basic emoticon.
+`;
+
+        // Parse and render on load.
+        window.addEventListener('DOMContentLoaded', function() {
+            const output = document.getElementById('output');
+            
+            // Use namespace for link resolution.
+            const parser = new DokuParserJS({ currentNamespace: 'showcase:ns' });
+            const html = parser.parse(showcaseMarkup);
+            
+            output.innerHTML = html;
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DokuParserJS Simple Example</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        textarea { width: 100%; height: 150px; margin-bottom: 10px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        #output { border: 1px solid #ddd; padding: 15px; margin-top: 10px; min-height: 100px; background: #f8f9fa; }
+        pre { background: #f8f9fa; padding: 10px; border-left: 3px solid #007bff; }
+    </style>
+</head>
+<body>
+    <h1>DokuParserJS Library Example</h1>
+    <p>Enter DokuWiki markup below and click Parse to convert to HTML.</p>
+    
+    <textarea id="markup" placeholder="Example: **Bold text** and [[https://example.com|external link]] or internal [[page|Link]]. Headers: == H2 ==. Lists: * Item 1&#10;  * Subitem.">**Bold text** and [[https://example.com|external link]] or internal [[page|Link]].&#10;== H2 Header ==&#10;* Item 1&#10;  * Subitem</textarea><br>
+    
+    <button onclick="parseMarkup()">Parse to HTML</button>
+    
+    <h2>Output:</h2>
+    <div id="output"></div>
+
+    <!-- Load the parser library -->
+    <script src="dokuparserjs.js"></script>
+    
+    <script>
+        // Simple usage: Instantiate and parse.
+        function parseMarkup() {
+            const markup = document.getElementById('markup').value;
+            const output = document.getElementById('output');
+            
+            // Optional: Set current namespace for relative links (e.g., 'ns1:ns2').
+            const parser = new DokuParserJS({ currentNamespace: 'example:ns' });
+            const html = parser.parse(markup);
+            
+            output.innerHTML = html;  // Render HTML output.
+        }
+        
+        // Auto-parse on load for demo.
+        window.addEventListener('DOMContentLoaded', parseMarkup);
+    </script>
+</body>
+</html>
