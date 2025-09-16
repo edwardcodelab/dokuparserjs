@@ -26,13 +26,13 @@ class DokuParserJS {
         this.htmlok = options.htmlok !== false;
         this.typography = options.typography !== false;
         this.footnotes = [];
+        this.footnoteContent = new Map();
         this.linkPlaceholders = [];
         this.nowikiPlaceholders = [];
         this.percentPlaceholders = [];
         this.listStack = [];
         this.currentIndent = -1;
         this.currentType = null;
-        this.openLi = false;
         this.currentSectionLevel = 0;
         this.rules = [
             {
@@ -64,7 +64,7 @@ class DokuParserJS {
                     if (target.match(emailRegex)) {
                         href = `mailto:${target}`;
                         className = 'mail';
-                        attrs = ` title="${target}"`;
+                        attrs = ` title="${target.replace(/ /g, ' [at] ').replace(/\./g, ' [dot] ')}"`;
                     } else if (target.startsWith('http://') || target.startsWith('https://')) {
                         display = text || target.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
                         className = 'urlextern';
@@ -89,11 +89,14 @@ class DokuParserJS {
                             const [page, section] = target.split('#');
                             let resolvedPage = this.resolveNamespace(page || 'syntax', this.currentNamespace);
                             href = '/' + resolvedPage.replace(/:/g, '/') + (section ? `#${section}` : '');
+                            className = 'wikilink2';
+                            attrs = ` title="${target}" data-wiki-id="${target}"`;
+                        } else if (path.endsWith(':start')) {
                             className = 'wikilink1 curid';
                         } else {
                             className = 'wikilink1';
                         }
-                        attrs = ` data-wiki-id="${target}"`;
+                        attrs += ` data-wiki-id="${target}"`;
                     }
                     const placeholder = `[LINK_${this.linkPlaceholders.length}]`;
                     this.linkPlaceholders.push(`<a href="${href}" class="${className}"${attrs}>${display}</a>`);
@@ -108,36 +111,37 @@ class DokuParserJS {
             { pattern: /<sup>(.+?)<\/sup>/g, replace: '<sup>$1</sup>' },
             { pattern: /<del>(.+?)<\/del>/g, replace: '<del>$1</del>' },
             {
-                pattern: /\{\{(\s*)([^|{}]+?)(?:\?(\d+)(?:x(\d+))?)?(?:\|(.+?))?(\s*)\}\}/g,
-                replace: (match, leadingSpace, src, width, height, alt, trailingSpace) => {
-                    let className = (!leadingSpace && trailingSpace) ? 'medialeft' : (leadingSpace && !trailingSpace) ? 'mediaright' : (!leadingSpace && !trailingSpace) ? 'mediacenter' : '';
+                pattern: /\{\{(\s*)([^|{}]+?)(?:\?(\d+)(?:x(\d+))?)?(?:\?(nolink|linkonly))?(?:\|(.+?))?(\s*)\}\}/g,
+                replace: (match, leadingSpace, src, width, height, linkParam, alt, trailingSpace) => {
+                    let className = '';
+                    if (!leadingSpace && !trailingSpace) className = 'mediacenter';
+                    else if (leadingSpace && !trailingSpace) className = 'mediaright';
+                    else if (!leadingSpace && trailingSpace) className = 'medialeft';
                     src = src.trim();
-                    let isLinkOnly = src.includes('?linkonly') || src.includes('?nolink');
-                    src = src.replace(/\?(linkonly|nolink)/, '').trim();
+                    let isLinkOnly = linkParam === 'linkonly' || linkParam === 'nolink';
                     if (!src.startsWith('http')) {
                         if (src.startsWith(':')) src = src.substring(1);
                         src = src.replace(/:/g, '/');
                         src = '/media/' + src;
                     }
                     if (isLinkOnly) {
-                        return `<a href="${src}" class="media">${alt || src.split('/').pop()}</a>`;
+                        return `<a href="${src}" class="media" rel="nofollow">${alt || src.split('/').pop()}</a>`;
                     }
                     const widthAttr = width ? ` width="${width}"` : '';
                     const heightAttr = height ? ` height="${height}"` : '';
-                    const altAttr = alt && alt.trim() ? ` alt="${alt}" title="${alt}"` : '';
+                    const altAttr = alt ? ` alt="${alt}" title="${alt}"` : '';
                     const classAttr = className ? ` class="${className}"` : '';
-                    const img = `<img src="${src}"${widthAttr}${heightAttr}${altAttr}${classAttr} loading="lazy">`;
-                    return className ? img : `<p>${img}</p>`;
+                    return `<img src="${src}"${widthAttr}${heightAttr}${altAttr}${classAttr} loading="lazy">`;
                 }
             },
-            { pattern: /<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>/g, replace: '<a href="mailto:$1" class="mail">$1</a>' },
+            { pattern: /<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>/g, replace: (match, email) => `<a href="mailto:${email}" class="mail" title="${email.replace(/ /g, ' [at] ').replace(/\./g, ' [dot] ')}">${email}</a>` },
             {
                 pattern: /(^|\s)(https?:\/\/[^\s<]+[^\s<.,:;"')\]\}])/g,
-                replace: (match, prefix, url) => `${prefix}<a href="${url}" class="urlextern" rel="nofollow">${url.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')}</a>`
+                replace: (match, prefix, url) => `${prefix}<a href="${url}" class="urlextern" rel="nofollow" title="${url}">${url.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')}</a>`
             },
             {
                 pattern: /(^|\s)(www\.[^\s<]+[^\s<.,:;"')\]\}])/g,
-                replace: (match, prefix, url) => `${prefix}<a href="http://${url}" class="urlextern" rel="nofollow">${url.replace(/^www\./, '').replace(/\/$/, '')}</a>`
+                replace: (match, prefix, url) => `${prefix}<a href="http://${url}" class="urlextern" rel="nofollow" title="http://${url}">${url.replace(/^www\./, '').replace(/\/$/, '')}</a>`
             },
             {
                 pattern: /<(?:html|HTML)>([\s\S]*?)<\/(?:html|HTML)>/g,
@@ -152,7 +156,7 @@ class DokuParserJS {
                 replace: (match, url, params) => {
                     const paramList = params ? params.split(/\s+/) : [];
                     const count = parseInt(paramList.find(p => /^\d+$/.test(p)) || 8);
-                    const items = Array(count).fill().map((_, i) => `<li><a href="${url}" class="urlextern" rel="nofollow">RSS item ${i + 1}</a> by Author (2025-09-16)</li>`);
+                    const items = Array.from({length: count}, (_, i) => `<li><a href="${url}" class="urlextern" rel="nofollow">RSS item ${i + 1}</a> by Author (${new Date().toISOString().split('T')[0]})</li>`);
                     return `<ul class="rss">${items.join('')}</ul>`;
                 }
             },
@@ -161,18 +165,17 @@ class DokuParserJS {
                 pattern: /~~INFO:syntaxplugins~~/g,
                 replace: () => {
                     const plugins = [
-                        { name: 'Structured Data Plugin', date: '2024-01-30', author: 'Andreas Gohr', desc: 'Add and query structured data in your wiki' },
-                        { name: 'DokuTeaser Plugin', date: '2016-01-16', author: 'Andreas Gohr', desc: 'A plugin for internal use on dokuwiki.org only' },
-                        { name: 'Gallery Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Creates a gallery of images from a namespace or RSS/ATOM feed' },
-                        { name: 'Info Plugin', date: '2020-06-04', author: 'Andreas Gohr', desc: 'Displays information about various DokuWiki internals' },
-                        { name: 'Repository Plugin', date: '2024-02-09', author: 'Andreas Gohr/Håkan Sandell', desc: 'Helps organizing the plugin and template repository' },
-                        { name: 'Translation Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Supports the easy setup of a multi-language wiki' },
-                        { name: 'PHPXref Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Makes linking to a PHPXref generated API doc easy' }
+                        { name: 'Structured Data Plugin', date: '2024-01-30', author: 'Andreas Gohr', desc: 'Add and query structured data in your wiki', url: 'data' },
+                        { name: 'DokuTeaser Plugin', date: '2016-01-16', author: 'Andreas Gohr', desc: 'A plugin for internal use on dokuwiki.org only', url: '' },
+                        { name: 'Gallery Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Creates a gallery of images from a namespace or RSS/ATOM feed', url: 'gallery' },
+                        { name: 'Info Plugin', date: '2020-06-04', author: 'Andreas Gohr', desc: 'Displays information about various DokuWiki internals', url: 'info' },
+                        { name: 'Repository plugin', date: '2024-02-09', author: 'Andreas Gohr/Håkan Sandell', desc: 'Helps organizing the plugin and template repository', url: 'repository' },
+                        { name: 'Translation Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Supports the easy setup of a multi-language wiki.', url: 'translation' },
+                        { name: 'PHPXref Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Makes linking to a PHPXref generated API doc easy.', url: 'xref' }
                     ];
-                    return `<ul>${plugins.map(p => `<li class="level1"><a href="https://www.dokuwiki.org/plugin:${p.name.toLowerCase().replace(/\s/g, '')}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</li>`).join('')}</ul>`;
+                    return `<ul>${plugins.map(p => `<li class="level1"><div class="li"><a href="https://www.dokuwiki.org/plugin:${p.url || p.name.toLowerCase().replace(/\s/g, '')}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</div></li>`).join('')}</ul>`;
                 }
             },
-            // Typography rules
             ...(this.typography ? [
                 { pattern: /\s->(?=\s)/g, replace: ' &rarr; ' },
                 { pattern: /\s<-(?=\s)/g, replace: ' &larr; ' },
@@ -189,12 +192,11 @@ class DokuParserJS {
                 { pattern: /\(r\)/gi, replace: '&reg;' },
                 { pattern: /(\d+)x(\d+)/g, replace: '$1&times;$2' }
             ] : []),
-            // Smiley rules (simplified to text emojis)
             { pattern: /(^|\s)8-\)(?=\s|$)/g, replace: '$1😎' },
             { pattern: /(^|\s)8-O(?=\s|$)/g, replace: '$1😲' },
             { pattern: /(^|\s):-?\((?=\s|$)/g, replace: '$1😢' },
             { pattern: /(^|\s):-?\)(?=\s|$)/g, replace: '$1🙂' },
-            { pattern: /(^|\s)=-\)(?=\s|$)/g, replace: '$1😊' },
+            { pattern: /(^|\s)=-?\)(?=\s|$)/g, replace: '$1😊' },
             { pattern: /(^|\s):-?\/(?=\s|$)/g, replace: '$1😕' },
             { pattern: /(^|\s):-?\\(?=\s|$)/g, replace: '$1😕' },
             { pattern: /(^|\s):-?D(?=\s|$)/g, replace: '$1😄' },
@@ -253,9 +255,8 @@ class DokuParserJS {
             resolved = currNs + (currNs ? ':' : '') + target;
         }
         resolved = resolved.replace(/:+/g, ':').replace(/^:/, '').replace(/:$/, '');
-        resolved = resolved.replace(/[^a-z0-9:]/g, '');
+        resolved = resolved.replace(/[^a-z0-9:]/gi, '');
         if (isStartPage) {
-            resolved = resolved || '';
             resolved += ':start';
         }
         return resolved;
@@ -265,10 +266,8 @@ class DokuParserJS {
         let result = [];
         let lines = doku.split('\n');
         let tableBuffer = [];
-        let tableAlignments = [];
         let tableRowspans = [];
         let quoteLevel = 0;
-        let quoteBuffer = [];
         let paragraphBuffer = [];
         let inCodeBlock = false;
         let codeBlockBuffer = [];
@@ -277,22 +276,24 @@ class DokuParserJS {
         let codeLang = '';
         let inTable = false;
         let inCodeSection = false;
+        let codeBlockIndent = -1;
         this.footnotes = [];
+        this.footnoteContent = new Map();
         this.linkPlaceholders = [];
         this.nowikiPlaceholders = [];
         this.percentPlaceholders = [];
         this.listStack = [];
         this.currentIndent = -1;
         this.currentType = null;
-        this.openLi = false;
         this.currentSectionLevel = 0;
 
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i];
             let trimmed = line.trim();
+
             if (!trimmed) {
                 if (inTable) {
-                    this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                     inTable = false;
                 } else if (inCodeBlock) {
                     codeBlockBuffer.push('');
@@ -300,14 +301,15 @@ class DokuParserJS {
                 } else if (inPre) {
                     preBuffer.push(line);
                     continue;
-                } else if (quoteLevel > 0 || paragraphBuffer.length > 0 || this.currentIndent >= 0) {
-                    this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                } else if (quoteLevel > 0 || paragraphBuffer.length > 0 || this.listStack.length > 0) {
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                     quoteLevel = 0;
                 }
                 continue;
             }
+
             if (trimmed.match(/^<code(?:\s+([^\s>]+))?>/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inCodeBlock = true;
                 inCodeSection = true;
                 codeBlockBuffer = [];
@@ -320,7 +322,7 @@ class DokuParserJS {
                     const beforeClose = contentAfter.substring(0, contentAfter.lastIndexOf('</code>'));
                     codeBlockBuffer[0] = beforeClose;
                     const classAttr = codeLang ? ` class="${codeLang}"` : '';
-                    result.push(`<p><pre${classAttr}>${codeBlockBuffer.join('\n')}</pre></p>`);
+                    result.push(`<pre${classAttr}>${this.escapeEntities(codeBlockBuffer.join('\n'))}</pre>`);
                     inCodeBlock = false;
                     codeBlockBuffer = [];
                     codeLang = '';
@@ -328,7 +330,7 @@ class DokuParserJS {
                 }
                 continue;
             } else if (trimmed.match(/^<file(?:\s+([^\s>]+))?>/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inCodeBlock = true;
                 inCodeSection = true;
                 codeBlockBuffer = [];
@@ -341,7 +343,7 @@ class DokuParserJS {
                     const beforeClose = contentAfter.substring(0, contentAfter.lastIndexOf('</file>'));
                     codeBlockBuffer[0] = beforeClose;
                     const classAttr = codeLang ? ` class="${codeLang}"` : '';
-                    result.push(`<p><pre${classAttr}>${codeBlockBuffer.join('\n')}</pre></p>`);
+                    result.push(`<pre${classAttr}>${this.escapeEntities(codeBlockBuffer.join('\n'))}</pre>`);
                     inCodeBlock = false;
                     codeBlockBuffer = [];
                     codeLang = '';
@@ -353,7 +355,7 @@ class DokuParserJS {
                 const beforeClose = line.substring(0, line.lastIndexOf(endTag));
                 codeBlockBuffer.push(beforeClose);
                 const classAttr = codeLang ? ` class="${codeLang}"` : '';
-                result.push(`<p><pre${classAttr}>${codeBlockBuffer.join('\n')}</pre></p>`);
+                result.push(`<pre${classAttr}>${this.escapeEntities(codeBlockBuffer.join('\n'))}</pre>`);
                 inCodeBlock = false;
                 codeBlockBuffer = [];
                 codeLang = '';
@@ -363,228 +365,316 @@ class DokuParserJS {
                 codeBlockBuffer.push(line);
                 continue;
             }
-            const indentMatch = line.match(/^(\s*)/);
-            const indentLevel = Math.floor(indentMatch[0].length / 2);
-            if (!inCodeBlock && !inTable && trimmed.match(/^(?:[*|-]\s*)/)) {
-                if (inTable) {
-                    this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                    inTable = false;
-                }
-                let content = trimmed.replace(/^(?:[*|-]\s*)/, '').trim();
+
+            const leadingSpaces = line.match(/^(\s*)/)[1];
+            const indent = leadingSpaces.length;
+
+            // Flush paragraph buffer before starting a list or code block
+            if (paragraphBuffer.length > 0 && (indent >= 2 || trimmed.match(/^(?:>|={2,6}.*={2,6}|[\^|]|-{4,})$/))) {
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+            }
+
+            if (indent >= 2 && !inCodeBlock && !inTable && (line[indent] === '*' || line[indent] === '-') && (line[indent + 1] === ' ' || line.substring(indent + 1).trim() === '')) {
+                let content = line.substring(indent + 2).trim();
                 content = content.replace(/\\\\\s*$/, '');
                 content = content.replace(/\\\\\s+/g, '<br>');
-                content = this.applyRules(content);
-                const listType = 'ul';
-                if (indentLevel > this.currentIndent) {
-                    result.push('<' + listType + '>');
-                    this.listStack.push({type: listType, indent: indentLevel});
+                content = this.applyRules(content); // Apply rules to list item content
+                const listType = line[indent] === '*' ? 'ul' : 'ol';
+                const depth = Math.floor(indent / 2);
+
+                // Close lists if indent decreases
+                while (this.currentIndent > depth && this.listStack.length > 0) {
+                    result.push('</li>');
+                    result.push(`</${this.listStack.pop().type}>`);
+                    this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
+                    this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
+                }
+
+                // Open new list or switch type
+                if (this.currentIndent === -1 || depth > this.currentIndent) {
+                    result.push(`<${listType}>`);
+                    this.listStack.push({ type: listType, indent: depth });
                     this.currentType = listType;
-                    this.currentIndent = indentLevel;
-                    result.push(`<li class="level${indentLevel + 1}">${content || ''}`);
-                    this.openLi = true;
-                } else {
-                    if (this.openLi) {
+                    this.currentIndent = depth;
+                } else if (depth === this.currentIndent && this.currentType !== listType) {
+                    result.push('</li>');
+                    result.push(`</${this.listStack.pop().type}>`);
+                    result.push(`<${listType}>`);
+                    this.listStack.push({ type: listType, indent: depth });
+                    this.currentType = listType;
+                }
+
+                // Add list item
+                result.push(`<li class="level${depth}"><div class="li">${content || ''}</div>`);
+
+                // Check if next line is a list item or non-list
+                if (i + 1 < lines.length) {
+                    const nextLine = lines[i + 1];
+                    const nextTrimmed = nextLine.trim();
+                    const nextIndent = nextLine.match(/^(\s*)/)[1].length;
+                    const nextDepth = Math.floor(nextIndent / 2);
+                    if (!nextTrimmed || nextIndent < 2 || !(nextLine[nextIndent] === '*' || nextLine[nextIndent] === '-') || nextDepth < depth) {
                         result.push('</li>');
-                        this.openLi = false;
+                        if (!nextTrimmed || nextIndent < 2 || nextDepth < depth) {
+                            while (this.listStack.length > 0 && this.currentIndent >= nextDepth) {
+                                result.push(`</${this.listStack.pop().type}>`);
+                                this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
+                                this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
+                            }
+                        }
                     }
-                    while (this.currentIndent > indentLevel) {
-                        result.push('</' + this.currentType + '>');
-                        this.listStack.pop();
-                        this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
-                        this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
-                    }
-                    if (indentLevel === this.currentIndent) {
-                        result.push(`<li class="level${indentLevel + 1}">${content || ''}`);
-                        this.openLi = true;
+                } else {
+                    result.push('</li>');
+                    while (this.listStack.length > 0) {
+                        result.push(`</${this.listStack.pop().type}>`);
+                        this.currentIndent = -1;
+                        this.currentType = null;
                     }
                 }
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+
                 continue;
             }
-            if (!inCodeBlock && !inTable && line.match(/^( {2,})(?![*|-]\s)/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+
+            // Check for code block (any indented line not a list)
+            if (!inCodeBlock && !inTable && indent >= 2 && !line.match(/^( {2,})([*|-]\s)/)) {
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inPre = true;
                 inCodeSection = true;
-                preBuffer = [];
+                preBuffer = [line];
+                codeBlockIndent = indent;
+                continue;
             }
+
             if (inPre) {
-                preBuffer.push(line);
-                if (!line.match(/^( {2,})/)) {
+                if (indent >= codeBlockIndent && trimmed && !line.match(/^( {2,})([*|-]\s)/)) {
+                    preBuffer.push(line);
+                    continue;
+                } else {
                     let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
-                    result.push(`<p><pre class="code">${preContent}</pre></p>`);
+                    preContent = this.escapeEntities(preContent);
+                    result.push(`<pre class="code">${preContent}</pre>`);
                     inPre = false;
                     preBuffer = [];
                     inCodeSection = false;
+                    codeBlockIndent = -1;
                 }
-                if (i === lines.length - 1 && inPre) {
-                    let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
-                    result.push(`<p><pre class="code">${preContent}</pre></p>`);
-                    inPre = false;
-                    inCodeSection = false;
-                }
+            }
+
+            if (i === lines.length - 1 && inPre) {
+                let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
+                preContent = this.escapeEntities(preContent);
+                result.push(`<pre class="code">${preContent}</pre>`);
+                inPre = false;
+                inCodeSection = false;
+                codeBlockIndent = -1;
                 continue;
             }
+
             const quoteMatch = line.match(/^(>+)\s*(.*)/);
             if (quoteMatch) {
                 const newLevel = quoteMatch[1].length;
                 const content = quoteMatch[2];
-                if (quoteLevel > 0 && newLevel !== quoteLevel) {
-                    this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                }
-                quoteLevel = newLevel;
                 let formattedContent = content.trim();
                 formattedContent = formattedContent.replace(/\\\\\s*$/, '');
                 formattedContent = formattedContent.replace(/\\\\\s+/g, '<br>');
                 formattedContent = this.applyRules(formattedContent);
-                quoteBuffer.push(formattedContent);
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                // Close previous quotes if level decreases
+                if (quoteLevel > newLevel) {
+                    for (let j = newLevel; j < quoteLevel; j++) {
+                        result.push('</div></blockquote>');
+                    }
+                }
+                // Open new quote blocks
+                for (let j = quoteLevel; j < newLevel; j++) {
+                    result.push('<blockquote><div class="no">');
+                }
+                result.push(formattedContent);
+                result.push('</div></blockquote>');
+                quoteLevel = newLevel;
+                if (i === lines.length - 1) {
+                    for (let j = 0; j < quoteLevel; j++) {
+                        result.push('</div></blockquote>');
+                    }
+                    quoteLevel = 0;
+                }
                 continue;
             } else if (quoteLevel > 0) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                for (let j = 0; j < quoteLevel; j++) {
+                    result.push('</div></blockquote>');
+                }
                 quoteLevel = 0;
             }
-            if (trimmed.endsWith('\\\\') || trimmed.includes('\\\\ ')) {
-                let content = trimmed.replace(/\\\\\s*$/, '');
-                content = content.replace(/\\\\\s+/g, '<br>');
-                content = this.applyRules(content);
-                paragraphBuffer.push(content);
-                if (trimmed.endsWith('\\\\')) paragraphBuffer.push('<br>');
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                continue;
-            }
+
             if (!inCodeSection && (trimmed.startsWith('^') || trimmed.startsWith('|'))) {
-                if (paragraphBuffer.length > 0 || quoteLevel > 0 || this.currentIndent >= 0) {
-                    this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                if (paragraphBuffer.length > 0 || quoteLevel > 0 || this.listStack.length > 0) {
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 }
-                const isHeader = trimmed.startsWith('^');
-                const sep = isHeader ? '^' : '|';
-                const rawLine = trimmed.substring(1);
-                let cells = rawLine.split(sep).map(cell => cell.trim());
+                let tableAlignments = [];
                 let alignments = [];
+                const hasPipe = trimmed.includes('|');
+                const isHeaderRow = trimmed.startsWith('^') && !hasPipe;
+                const sep = isHeaderRow ? '^' : '|';
+                let rawLine = trimmed.substring(1).trim();
+                let cells = rawLine.split(sep).map(cell => cell.trim());
                 let cellContents = [];
-                cells.forEach(cell => {
-                    let align = '';
-                    if (cell.match(/^\s{2,}.*\s{2,}$/)) {
-                        align = 'center';
-                        cell = cell.trim();
-                    } else if (cell.match(/^\s{2,}/)) {
-                        align = 'right';
-                        cell = cell.trim();
-                    } else if (cell.match(/\s{2,}$/)) {
-                        align = 'left';
-                        cell = cell.trim();
+                try {
+                    cells.forEach((cell) => {
+                        let align = '';
+                        if (cell.match(/^\s{2,}.*\s{2,}$/)) {
+                            align = 'center';
+                            cell = cell.trim();
+                        } else if (cell.match(/^\s{2,}/)) {
+                            align = 'right';
+                            cell = cell.trim();
+                        } else if (cell.match(/\s{2,}$/)) {
+                            align = 'left';
+                            cell = cell.trim();
+                        }
+                        cell = cell.replace(/\\\\\s*$/, '');
+                        cell = cell.replace(/\\\\\s+/g, '<br>');
+                        alignments.push(align);
+                        cellContents.push(cell);
+                    });
+                    if (isHeaderRow) tableAlignments = alignments;
+                    if (!tableRowspans.length || tableRowspans.length !== cellContents.length) {
+                        tableRowspans = new Array(cellContents.length).fill(0);
                     }
-                    cell = cell.replace(/\\\\\s*$/, '');
-                    cell = cell.replace(/\\\\\s+/g, '<br>');
-                    alignments.push(align);
-                    cellContents.push(cell);
-                });
-                if (isHeader) tableAlignments = alignments;
-                const tag = isHeader ? 'th' : 'td';
-                let row = '<tr>';
-                let skipCells = 0;
-                cellContents.forEach((cell, i) => {
-                    if (skipCells > 0) {
-                        skipCells--;
-                        return;
+                    const tag = isHeaderRow ? 'th' : 'td';
+                    let row = '<tr class="row0">';
+                    for (let j = 0; j < cellContents.length;) {
+                        if (tableRowspans[j] > 0) {
+                            tableRowspans[j]--;
+                            j++;
+                            continue;
+                        }
+                        let cell = cellContents[j];
+                        let colspan = 1;
+                        let k = j + 1;
+                        while (k < cellContents.length && cellContents[k] === '') {
+                            k++;
+                            colspan++;
+                        }
+                        let rowspanAttr = '';
+                        if (cell === ':::') {
+                            tableRowspans[j]--;
+                            j++;
+                            continue;
+                        } else if (cell.match(/^:+$/)) {
+                            const colons = (cell.match(/:/g) || []).length;
+                            rowspanAttr = colons > 0 ? ` rowspan="${colons}"` : '';
+                            tableRowspans[j] = colons - 1;
+                            cell = '';
+                        }
+                        let content = '';
+                        try {
+                            content = this.applyRules(cell);
+                        } catch (e) {
+                            console.error(`Error in applyRules for cell "${cell}":`, e.message);
+                            content = this.escapeEntities(cell);
+                        }
+                        const alignClass = alignments[j] || (j < tableAlignments.length ? tableAlignments[j] : 'leftalign');
+                        const classAttr = ` class="col${j} ${alignClass}"`;
+                        const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : '';
+                        row += `<${tag}${rowspanAttr}${colspanAttr}${classAttr}>${content}</${tag}>`;
+                        j = k;
                     }
-                    let colspan = 1;
-                    while (i + 1 < cellContents.length && cellContents[i + 1] === '') {
-                        colspan++;
-                        skipCells++;
-                        i++;
-                    }
-                    let rowspanAttr = '';
-                    if (cell === ':::' && tableRowspans[i]) {
-                        tableRowspans[i]--;
-                        return;
-                    } else if (cell.match(/^:+:$/)) {
-                        const colons = cell.split(':').length - 1;
-                        rowspanAttr = colons > 1 ? ` rowspan="${colons}"` : '';
-                        tableRowspans[i] = colons - 1;
-                        cell = '';
-                    }
-                    let content = this.applyRules(cell.trim());
-                    const alignClass = (alignments[i] || tableAlignments[i] || '');
-                    const classAttr = alignClass ? ` class="${alignClass}"` : '';
-                    const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : '';
-                    row += `<${tag}${rowspanAttr}${colspanAttr}${classAttr}>${content}</${tag}>`;
-                });
-                row += '</tr>';
-                tableBuffer.push(row);
-                inTable = true;
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    row += '</tr>';
+                    tableBuffer.push(row);
+                    inTable = true;
+                } catch (e) {
+                    console.error(`Error parsing table at line ${i + 1}:`, e.message);
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    inTable = false;
+                    continue;
+                }
+                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 continue;
             }
+
+            if (inTable && !trimmed.match(/^(?:\s*[\^|].*)$/)) {
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                inTable = false;
+            }
+
             if (trimmed.match(/^={2,6}.*={2,6}$/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                let content = trimmed.replace(/=$/, ''); // Remove trailing '='
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                const equalsCount = (trimmed.match(/=/g) || []).length / 2;
+                let content = trimmed.replace(/^={2,6}/, '').replace(/={2,6}$/, '').trim();
                 content = this.applyRules(content);
-                const headerHtml = this.getTitle(content);
-                const headerText = content.replace(/={2,6}/g, '').trim();
-                this.currentSectionLevel = parseInt(headerHtml.match(/h(\d)/)[1]);
-                result.push(`<div class="level${this.currentSectionLevel}">${headerHtml}`);
-                inCodeSection = headerText.match(/^(Links|Tables|Quoting|Text Conversions|No Formatting|Embedding HTML and PHP)$/i);
+                const level = Math.max(1, Math.min(6, 6 - Math.floor(equalsCount) + 1));
+                const id = content.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+                const sectionEditNum = level;
+                result.push(`<h${level} class="sectionedit${sectionEditNum}" id="${id}">${content}</h${level}>`);
+                this.currentSectionLevel = level;
+                inCodeSection = content.match(/^(Links|Tables|Quoting|Text Conversions|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 continue;
             }
+
             if (trimmed.match(/^-{4,}$/)) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 result.push('<hr>');
                 inCodeSection = false;
                 continue;
             }
+
             if (trimmed.match(/^\{\{.*\}\}$/)) {
                 let content = this.applyRules(trimmed);
-                paragraphBuffer.push(content);
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                result.push(`<p>${content}</p>`);
+                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 continue;
             }
+
             if (inTable) {
-                this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inTable = false;
             }
+
             let content = trimmed;
             if (inCodeSection && (trimmed.startsWith('^') || trimmed.startsWith('|'))) {
                 content = content.replace(/\\\\\s*$/, '');
                 content = content.replace(/\\\\\s+/g, '<br>');
                 content = this.applyRules(content);
-                result.push(`<p><pre class="code">${content}</pre></p>`);
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                result.push(`<pre class="code">${content}</pre>`);
+                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 continue;
             }
+
             content = content.replace(/\\\\\s*$/, '');
             content = content.replace(/\\\\\s+/g, '<br>');
             content = this.applyRules(content);
             paragraphBuffer.push(content);
-            if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+            if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
         }
-        this.flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+
+        this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+
         if (inPre) {
             let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
-            result.push(`<p><pre class="code">${preContent}</pre></p>`);
+            preContent = this.escapeEntities(preContent);
+            result.push(`<pre class="code">${preContent}</pre>`);
         }
-        if (this.footnotes.length > 0) {
-            if (this.currentSectionLevel > 0) result.push('</div>');
+
+        if (this.footnoteContent.size > 0) {
             result.push('<div class="footnotes">');
-            this.footnotes.forEach((note, i) => {
+            Array.from(this.footnoteContent.entries()).forEach(([note, index]) => {
                 if (!note.trim()) return;
                 const escapedNote = this.escapeEntities(note);
-                result.push(`<div class="fn"><sup><a href="#fnt__${i + 1}" id="fn__${i + 1}" class="fn_bot">${i + 1}</a></sup> <div class="content">${escapedNote}</div></div>`);
+                result.push(`<div class="fn"><sup><a href="#fnt__${index + 1}" id="fn__${index + 1}" class="fn_bot">${index + 1}</a></sup> <div class="content">${escapedNote}</div></div>`);
             });
             result.push('</div>');
-        } else if (this.currentSectionLevel > 0) {
-            result.push('</div>');
         }
-        let finalResult = result.join('');
+
+        let finalResult = result.join('\n');
         this.linkPlaceholders.forEach((link, index) => {
             finalResult = finalResult.replace(`[LINK_${index}]`, link);
         });
         this.nowikiPlaceholders.forEach((raw, idx) => {
-            finalResult = finalResult.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), raw);
+            finalResult = finalResult.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
         this.percentPlaceholders.forEach((raw, idx) => {
-            finalResult = finalResult.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), raw);
+            finalResult = finalResult.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
+
         return finalResult;
     }
 
@@ -596,10 +686,10 @@ class DokuParserJS {
             result = result.replace(rule.pattern, typeof rule.replace === 'function' ? rule.replace.bind(this) : rule.replace);
         });
         this.nowikiPlaceholders.forEach((raw, idx) => {
-            result = result.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), raw);
+            result = result.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
         this.percentPlaceholders.forEach((raw, idx) => {
-            result = result.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), raw);
+            result = result.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
         result = this.parseFootnotes(result);
         return result;
@@ -607,10 +697,13 @@ class DokuParserJS {
 
     parseFootnotes(content) {
         return content.replace(/\(\((.+?)\)\)/g, (match, note) => {
-            if (!note.trim()) return '';
-            this.footnotes.push(note);
-            const index = this.footnotes.length;
-            return `<sup><a href="#fn__${index}" class="fn_bot">[${index}]</a></sup>`;
+            if (!note.trim()) return match;
+            let index = this.footnoteContent.get(note);
+            if (index === undefined) {
+                index = this.footnoteContent.size;
+                this.footnoteContent.set(note, index);
+            }
+            return `<sup><a href="#fn__${index + 1}" id="fnt__${index + 1}" class="fn_bot">[${index + 1}]</a></sup>`;
         });
     }
 
@@ -620,50 +713,40 @@ class DokuParserJS {
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
+            .replace(/'/g, '&#39;');
     }
 
-    getTitle(line) {
-        const trimmed = line.trim();
-        const i = trimmed.search(/[^=]/);
-        const content = trimmed.substr(i, trimmed.length - i * 2).trim();
-        const element = 'h' + (7 - i);
-        const id = content.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_/, '').replace(/_$/, '');
-        return `<${element} class="sectionedit${7 - i}" id="${id}">${content}</${element}>`;
-    }
-
-    flushBlocks(result, tableBuffer, quoteBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans) {
-        if (this.openLi) {
-            result.push('</li>');
-            this.openLi = false;
+    flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans) {
+        if (this.listStack.length > 0) {
+            while (this.listStack.length > 0) {
+                result.push(`</${this.listStack.pop().type}>`);
+                this.currentIndent = -1;
+                this.currentType = null;
+            }
         }
-        while (this.listStack.length > 0) {
-            result.push('</' + this.listStack.pop().type + '>');
-            this.currentIndent = -1;
-            this.currentType = null;
-        }
-        if (tableBuffer.length) {
-            result.push('<table class="inline">' + tableBuffer.join('') + '</table>');
+        if (tableBuffer.length > 0) {
+            result.push(`<table class="inline">${tableBuffer.join('')}</table>`);
             tableBuffer.length = 0;
             tableRowspans.length = 0;
         }
-        if (quoteBuffer.length) {
-            result.push(`<blockquote class="quote-level-${quoteLevel}">` + quoteBuffer.join('<br>') + '</blockquote>');
-            quoteBuffer.length = 0;
+        if (quoteLevel > 0) {
+            for (let j = 0; j < quoteLevel; j++) {
+                result.push('</div></blockquote>');
+            }
+            quoteLevel = 0;
         }
-        if (paragraphBuffer.length) {
-            result.push('<p>' + paragraphBuffer.join(' ') + '</p>');
+        if (paragraphBuffer.length > 0) {
+            let paraContent = paragraphBuffer.join(' ');
+            if (paraContent.trim()) {
+                result.push(`<p>${paraContent}</p>`);
+            }
             paragraphBuffer.length = 0;
         }
-        if (codeBlockBuffer.length) {
+        if (codeBlockBuffer.length > 0) {
             const classAttr = codeLang ? ` class="${codeLang}"` : '';
-            result.push(`<p><pre${classAttr}>${codeBlockBuffer.join('\n')}</pre></p>`);
+            result.push(`<pre${classAttr}>${this.escapeEntities(codeBlockBuffer.join('\n'))}</pre>`);
             codeBlockBuffer.length = 0;
         }
-    }
-
-    encapsulate(string, element, alignClass = '') {
-        return '<' + element + (alignClass ? ' class="' + alignClass + '"' : '') + '>' + string + '</' + element + '>';
     }
 
     static parseCLI() {
@@ -673,13 +756,13 @@ class DokuParserJS {
         stdin.setEncoding('utf8');
         stdin.on('readable', () => {
             let chunk;
-            while (chunk = stdin.read()) {
+            while ((chunk = stdin.read())) {
                 input += chunk;
             }
         });
         stdin.on('end', () => {
             if (!input.trim()) {
-                console.error('Usage: node dokuparserjs.js < input.txt | cat input.txt | node dokuparserjs.js');
+                console.error('Usage: node dokuparserjs.js < input.txt');
                 process.exit(1);
             }
             try {
