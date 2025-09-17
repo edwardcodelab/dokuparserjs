@@ -111,14 +111,30 @@ class DokuParserJS {
             { pattern: /<sup>(.+?)<\/sup>/g, replace: '<sup>$1</sup>' },
             { pattern: /<del>(.+?)<\/del>/g, replace: '<del>$1</del>' },
             {
-                pattern: /\{\{(\s*)([^|{}]+?)(?:\?(\d+)(?:x(\d+))?)?(?:\?(nolink|linkonly))?(?:\|(.+?))?(\s*)\}\}/g,
-                replace: (match, leadingSpace, src, width, height, linkParam, alt, trailingSpace) => {
+                pattern: /\{\{(\s*)([^|{}]*?)(?:\?([^|]*?))?(?:\|(.+?))?(\s*)\}\}/g,
+                replace: (match, leadingSpace, src, params, alt, trailingSpace) => {
                     let className = '';
                     if (!leadingSpace && !trailingSpace) className = 'mediacenter';
                     else if (leadingSpace && !trailingSpace) className = 'mediaright';
                     else if (!leadingSpace && trailingSpace) className = 'medialeft';
                     src = src.trim();
-                    let isLinkOnly = linkParam === 'linkonly' || linkParam === 'nolink';
+                    let width = '', height = '', isLinkOnly = false, isNoCache = false, isReCache = false;
+                    if (params) {
+                        const paramList = params.split('&');
+                        paramList.forEach(param => {
+                            if (param.match(/^\d+$/)) {
+                                width = param;
+                            } else if (param.match(/^\d+x\d+$/)) {
+                                [width, height] = param.split('x');
+                            } else if (param === 'nolink' || param === 'linkonly') {
+                                isLinkOnly = true;
+                            } else if (param === 'nocache') {
+                                isNoCache = true;
+                            } else if (param === 'recache') {
+                                isReCache = true;
+                            }
+                        });
+                    }
                     if (!src.startsWith('http')) {
                         if (src.startsWith(':')) src = src.substring(1);
                         src = src.replace(/:/g, '/');
@@ -131,6 +147,7 @@ class DokuParserJS {
                     const heightAttr = height ? ` height="${height}"` : '';
                     const altAttr = alt ? ` alt="${alt}" title="${alt}"` : '';
                     const classAttr = className ? ` class="${className}"` : '';
+                    // Note: nocache and recache are not fully implemented in this parser
                     return `<img src="${src}"${widthAttr}${heightAttr}${altAttr}${classAttr} loading="lazy">`;
                 }
             },
@@ -255,7 +272,7 @@ class DokuParserJS {
             resolved = currNs + (currNs ? ':' : '') + target;
         }
         resolved = resolved.replace(/:+/g, ':').replace(/^:/, '').replace(/:$/, '');
-        resolved = resolved.replace(/[^a-z0-9:]/gi, '');
+        resolved = resolved.replace(/[^a-z0-9:-]/gi, '');
         if (isStartPage) {
             resolved += ':start';
         }
@@ -402,12 +419,14 @@ class DokuParserJS {
                     result.push(`<${listType}>`);
                     this.listStack.push({ type: listType, indent: depth });
                     this.currentType = listType;
+                } else if (depth === this.currentIndent) {
+                    result.push('</li>');
                 }
 
                 // Add list item
                 result.push(`<li class="level${depth}"><div class="li">${content || ''}</div>`);
 
-                // Check if next line is a list item or non-list
+                // Check if next line is a list item
                 if (i + 1 < lines.length) {
                     const nextLine = lines[i + 1];
                     const nextTrimmed = nextLine.trim();
@@ -416,7 +435,7 @@ class DokuParserJS {
                     if (!nextTrimmed || nextIndent < 2 || !(nextLine[nextIndent] === '*' || nextLine[nextIndent] === '-') || nextDepth < depth) {
                         result.push('</li>');
                         if (!nextTrimmed || nextIndent < 2 || nextDepth < depth) {
-                            while (this.listStack.length > 0 && this.currentIndent >= nextDepth) {
+                            while (this.listStack.length > 0 && this.currentIndent >= (nextTrimmed ? nextDepth : 0)) {
                                 result.push(`</${this.listStack.pop().type}>`);
                                 this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
                                 this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
@@ -479,30 +498,29 @@ class DokuParserJS {
                 formattedContent = formattedContent.replace(/\\\\\s+/g, '<br>');
                 formattedContent = this.applyRules(formattedContent);
                 // Close previous quotes if level decreases
-                if (quoteLevel > newLevel) {
-                    for (let j = newLevel; j < quoteLevel; j++) {
-                        result.push('</div></blockquote>');
-                    }
+                while (quoteLevel > newLevel) {
+                    result.push('</div></blockquote>');
+                    quoteLevel--;
                 }
                 // Open new quote blocks
-                for (let j = quoteLevel; j < newLevel; j++) {
+                while (quoteLevel < newLevel) {
                     result.push('<blockquote><div class="no">');
+                    quoteLevel++;
                 }
                 result.push(formattedContent);
                 result.push('</div></blockquote>');
-                quoteLevel = newLevel;
                 if (i === lines.length - 1) {
-                    for (let j = 0; j < quoteLevel; j++) {
+                    while (quoteLevel > 0) {
                         result.push('</div></blockquote>');
+                        quoteLevel--;
                     }
-                    quoteLevel = 0;
                 }
                 continue;
             } else if (quoteLevel > 0) {
-                for (let j = 0; j < quoteLevel; j++) {
+                while (quoteLevel > 0) {
                     result.push('</div></blockquote>');
+                    quoteLevel--;
                 }
-                quoteLevel = 0;
             }
 
             if (!inCodeSection && (trimmed.startsWith('^') || trimmed.startsWith('|'))) {
@@ -561,7 +579,7 @@ class DokuParserJS {
                             continue;
                         } else if (cell.match(/^:+$/)) {
                             const colons = (cell.match(/:/g) || []).length;
-                            rowspanAttr = colons > 0 ? ` rowspan="${colons}"` : '';
+                            rowspanAttr = colons > 1 ? ` rowspan="${colons}"` : '';
                             tableRowspans[j] = colons - 1;
                             cell = '';
                         }
@@ -730,10 +748,10 @@ class DokuParserJS {
             tableRowspans.length = 0;
         }
         if (quoteLevel > 0) {
-            for (let j = 0; j < quoteLevel; j++) {
+            while (quoteLevel > 0) {
                 result.push('</div></blockquote>');
+                quoteLevel--;
             }
-            quoteLevel = 0;
         }
         if (paragraphBuffer.length > 0) {
             let paraContent = paragraphBuffer.join(' ');
