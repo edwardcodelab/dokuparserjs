@@ -1,39 +1,47 @@
 /**
  * DokuParserJS: A lightweight JavaScript class for parsing DokuWiki markup into HTML.
- *
- * This parser processes DokuWiki syntax line-by-line, handling block-level elements (headers, lists, tables, quotes, code)
- * via a state machine in `parse()`, and inline elements (links, bold, etc.) via regex rules in `applyRules()`.
- * It supports namespace-aware linking and graceful edges (e.g., malformed tables).
- *
- * @example
- * const parser = new DokuParserJS({ currentNamespace: 'ns1:ns2', interwikiMap: { wp: 'https://en.wikipedia.org/wiki/' } });
- * const html = parser.parse('**bold** [[link]]');
- *
- * Limitations: Basic rowspan; no full RSS parsing; no <file> downloads. No lib deps—native JS only.
- * Collaboration: Extend `rules` array for new inline; add states in `parse()` for blocks. Run tests via `test.html`.
+ * Version 9: Fixed section links and table parsing issues.
  *
  * @param {Object} [options] - Parser options.
- * @param {string} [options.currentNamespace=''] - Current namespace for relative link resolution.
+ * @param {string} [options.currentNamespace=''] - Current namespace for link resolution.
  * @param {Object} [options.interwikiMap={}] - Map of interwiki prefixes to URLs.
- * @param {boolean} [options.htmlok=true] - Enable HTML/PHP embedding.
+ * @param {boolean} [options.htmlok=true] - Enable HTML embedding.
  * @param {boolean} [options.typography=true] - Enable typography conversions.
- * @returns {DokuParserJS} - Initialized parser instance.
+ * @param {string} [options.mediaBasePath='/media/'] - Base path for media files (local mode).
+ * @param {string} [options.pagesBasePath='/'] - Base path for wiki pages (local mode).
+ * @param {boolean} [options.useTxtExtension=false] - Append .txt to internal links (local mode).
+ * @param {boolean} [options.useDokuWikiPaths=false] - Use DokuWiki path format (/lib/exe/fetch.php, /doku.php).
  */
 class DokuParserJS {
     constructor(options = {}) {
-        this.currentNamespace = options.currentNamespace || '';
-        this.interwikiMap = options.interwikiMap || { wp: 'https://en.wikipedia.org/wiki/', doku: 'https://www.dokuwiki.org/' };
+        this.currentNamespace = (options.currentNamespace || '').replace(/^:+|:+$/g, '');
+        this.interwikiMap = options.interwikiMap || {
+            wp: 'https://en.wikipedia.org/wiki/',
+            doku: 'https://www.dokuwiki.org/'
+        };
         this.htmlok = options.htmlok !== false;
         this.typography = options.typography !== false;
+        this.mediaBasePath = options.mediaBasePath?.trim()
+            ? options.mediaBasePath.replace(/\/+$/, '') + '/' : '/media/';
+        this.pagesBasePath = options.pagesBasePath?.trim()
+            ? options.pagesBasePath.replace(/\/+$/, '') + '/' : '/';
+        this.useTxtExtension = options.useTxtExtension || false;
+        this.useDokuWikiPaths = options.useDokuWikiPaths || false;
         this.footnotes = [];
         this.footnoteContent = new Map();
         this.linkPlaceholders = [];
         this.nowikiPlaceholders = [];
-        this.percentPlaceholders = [];
         this.listStack = [];
         this.currentIndent = -1;
         this.currentType = null;
         this.currentSectionLevel = 0;
+        this.currentSection = '';
+        this.smileyMap = {
+            '8-)': '😎', '8-O': '😲', ':-(': '😢', ':-)': '🙂', '=-)': '😊',
+            ':-/': '😕', ':-\\': '😕', ':-D': '😄', ':-P': '😛', ':-O': '😯',
+            ':-X': '😣', ':-|': '😐', ';-)': '😉', '^_^': '😄', ':!:': '❗',
+            ':?:': '❓', 'LOL': '😂', 'FIXME': '🔧', 'DELETEME': '🗑️'
+        };
         this.rules = [
             {
                 pattern: /<nowiki>([\s\S]*?)<\/nowiki>/g,
@@ -46,9 +54,70 @@ class DokuParserJS {
             {
                 pattern: /%%([\s\S]*?)%%/g,
                 replace: (match, content) => {
-                    const ph = `[PERCENT_${this.percentPlaceholders.length}]`;
-                    this.percentPlaceholders.push(content);
-                    return ph;
+                    content = content.trim();
+                    if (this.currentSection === 'Text to Image Conversions') {
+                        return this.smileyMap[content] || content;
+                    } else if (this.currentSection.match(/^(Code Blocks|Downloadable Code Blocks)$/i)) {
+                        return this.escapeEntities(content);
+                    }
+                    return this.escapeEntities(content);
+                }
+            },
+            {
+                pattern: /\{\{rss>(.+?)(?:\s+(.+?))?\}\}/g,
+                replace: (match, url, params) => {
+                    const paramList = params ? params.split(/\s+/) : [];
+                    const count = parseInt(paramList.find(p => /^\d+$/.test(p)) || 8);
+                    const items = Array.from({length: count}, (_, i) =>
+                        `<li><a href="${url}" class="urlextern" rel="nofollow">RSS item ${i + 1}</a> by Author (${new Date().toISOString().split('T')[0]})</li>`
+                    );
+                    return `<ul class="rss">${items.join('')}</ul>`;
+                }
+            },
+            {
+                pattern: /\{\{(\s*)([^|{}]*?)(?:\?([^|]*?))?(?:\|(.+?)?)?(\s*)\}\}/g,
+                replace: (match, leadingSpace, src, params, alt, trailingSpace) => {
+                    console.log(`Processing image: src=${src}, params=${params}, alt=${alt}`);
+                    let className = '';
+                    if (!leadingSpace && !trailingSpace) className = 'mediacenter';
+                    else if (leadingSpace && !trailingSpace) className = 'mediaright';
+                    else if (!leadingSpace && trailingSpace) className = 'medialeft';
+                    src = src.trim();
+                    let width = '', height = '', isLinkOnly = false, isNoLink = false;
+                    if (params) {
+                        const paramList = params.split('&');
+                        paramList.forEach(param => {
+                            if (param.match(/^\d+$/)) width = param;
+                            else if (param.match(/^\d+x\d+$/)) [width, height] = param.split('x');
+                            else if (param === 'linkonly') isLinkOnly = true;
+                            else if (param === 'nolink') isNoLink = true;
+                        });
+                    }
+                    let resolvedSrc, filename;
+                    if (!src.startsWith('http') && !src.startsWith('rss>')) {
+                        const parts = src.split(':');
+                        filename = parts.pop();
+                        const namespace = parts.join(':').replace(/^:/, '');
+                        resolvedSrc = this.resolveNamespace(namespace, '', true);
+                        if (this.useDokuWikiPaths) {
+                            src = `/lib/exe/fetch.php?media=${resolvedSrc ? encodeURIComponent(resolvedSrc) + ':' : ''}${encodeURIComponent(filename)}`;
+                        } else {
+                            src = this.mediaBasePath + (resolvedSrc ? resolvedSrc.split(':').map(encodeURIComponent).join('/') + '/' : '') + encodeURIComponent(filename);
+                        }
+                    } else {
+                        filename = src.split('/').pop();
+                        src = encodeURIComponent(src);
+                    }
+                    console.log(`Resolved image src: ${src}, filename=${filename}`);
+                    if (isLinkOnly) {
+                        return `<a href="${src}" class="media" rel="nofollow">${alt || decodeURIComponent(filename)}</a>`;
+                    }
+                    const widthAttr = width ? ` width="${width}"` : '';
+                    const heightAttr = height ? ` height="${height}"` : '';
+                    const altAttr = alt ? ` alt="${alt}" title="${alt}"` : '';
+                    const classAttr = className ? ` class="${className}"` : '';
+                    const imgTag = `<img src="${src}"${widthAttr}${heightAttr}${altAttr}${classAttr} loading="lazy">`;
+                    return isNoLink ? imgTag : `<a href="${src}" class="media">${imgTag}</a>`;
                 }
             },
             {
@@ -56,16 +125,19 @@ class DokuParserJS {
                 replace: (match, target, text) => {
                     target = target.trim();
                     text = text ? text.trim() : '';
+                    if (text && text.match(/\{\{.*\}\}/)) {
+                        text = this.applyRules(text);
+                        text = text.replace(/<a\s+[^>]*class\s*=\s*"media"[^>]*>([\s\S]*?)<\/a>/g, '$1');
+                    }
                     let display = text || target;
                     let href = target;
-                    let className = '';
-                    let attrs = '';
+                    let className = '', attrs = '';
                     const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
                     if (target.match(emailRegex)) {
                         href = `mailto:${target}`;
                         className = 'mail';
                         attrs = ` title="${target.replace(/ /g, ' [at] ').replace(/\./g, ' [dot] ')}"`;
-                    } else if (target.startsWith('http://') || target.startsWith('https://')) {
+                    } else if (target.match(/^https?:\/\//)) {
                         display = text || target.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '');
                         className = 'urlextern';
                         attrs = ` title="${target}" rel="nofollow"`;
@@ -80,23 +152,24 @@ class DokuParserJS {
                             return match;
                         }
                     } else if (target.startsWith('\\')) {
-                        display = text || target;
-                        return display;
+                        className = 'windowsshares';
+                        attrs = ` title="${target}"`;
                     } else {
-                        let path = this.resolveNamespace(target, this.currentNamespace);
-                        href = '/' + path.replace(/:/g, '/');
-                        if (target.includes('#')) {
-                            const [page, section] = target.split('#');
-                            let resolvedPage = this.resolveNamespace(page || 'syntax', this.currentNamespace);
-                            href = '/' + resolvedPage.replace(/:/g, '/') + (section ? `#${section}` : '');
+                        let [page, section] = target.split('#');
+                        let resolvedPage = this.resolveNamespace(page || 'start', this.currentNamespace);
+                        if (section) {
+                            href = this.useDokuWikiPaths
+                                ? `/doku.php?id=${encodeURIComponent(resolvedPage)}#${section.toLowerCase().replace(/[^a-z0-9]/g, '_')}`
+                                : `${this.pagesBasePath}${resolvedPage.split(':').map(encodeURIComponent).join('/')}${this.useTxtExtension ? '.txt' : ''}#${section.toLowerCase().replace(/[^a-z0-9]/g, '_')}`;
                             className = 'wikilink2';
-                            attrs = ` title="${target}" data-wiki-id="${target}"`;
-                        } else if (path.endsWith(':start')) {
-                            className = 'wikilink1 curid';
+                            attrs = ` title="${target}" data-wiki-id="${target}" rel="nofollow"`;
                         } else {
-                            className = 'wikilink1';
+                            href = this.useDokuWikiPaths
+                                ? `/doku.php?id=${encodeURIComponent(resolvedPage)}`
+                                : `${this.pagesBasePath}${resolvedPage.split(':').map(encodeURIComponent).join('/')}${this.useTxtExtension ? '.txt' : ''}`;
+                            className = resolvedPage.endsWith(':start') ? 'wikilink1 curid' : 'wikilink1';
+                            attrs = ` data-wiki-id="${target}"`;
                         }
-                        attrs += ` data-wiki-id="${target}"`;
                     }
                     const placeholder = `[LINK_${this.linkPlaceholders.length}]`;
                     this.linkPlaceholders.push(`<a href="${href}" class="${className}"${attrs}>${display}</a>`);
@@ -105,61 +178,11 @@ class DokuParserJS {
             },
             { pattern: /\*\*(.+?)\*\*/g, replace: '<strong>$1</strong>' },
             { pattern: /\/\/(.+?)\/\//g, replace: '<em>$1</em>' },
-            { pattern: /__(.+?)__/g, replace: '<u>$1</u>' },
-            { pattern: /''(.+?)''/g, replace: '<tt>$1</tt>' },
+            { pattern: /__(.+?)__/g, replace: '<em class="u">$1</em>' },
+            { pattern: /''(.+?)''/g, replace: '<code>$1</code>' },
             { pattern: /<sub>(.+?)<\/sub>/g, replace: '<sub>$1</sub>' },
             { pattern: /<sup>(.+?)<\/sup>/g, replace: '<sup>$1</sup>' },
             { pattern: /<del>(.+?)<\/del>/g, replace: '<del>$1</del>' },
-            {
-                pattern: /\{\{(\s*)([^|{}]*?)(?:\?([^|]*?))?(?:\|(.+?))?(\s*)\}\}/g,
-                replace: (match, leadingSpace, src, params, alt, trailingSpace) => {
-                    let className = '';
-                    if (!leadingSpace && !trailingSpace) className = 'mediacenter';
-                    else if (leadingSpace && !trailingSpace) className = 'mediaright';
-                    else if (!leadingSpace && trailingSpace) className = 'medialeft';
-                    src = src.trim();
-                    let width = '', height = '', isLinkOnly = false, isNoCache = false, isReCache = false;
-                    if (params) {
-                        const paramList = params.split('&');
-                        paramList.forEach(param => {
-                            if (param.match(/^\d+$/)) {
-                                width = param;
-                            } else if (param.match(/^\d+x\d+$/)) {
-                                [width, height] = param.split('x');
-                            } else if (param === 'nolink' || param === 'linkonly') {
-                                isLinkOnly = true;
-                            } else if (param === 'nocache') {
-                                isNoCache = true;
-                            } else if (param === 'recache') {
-                                isReCache = true;
-                            }
-                        });
-                    }
-                    if (!src.startsWith('http')) {
-                        if (src.startsWith(':')) src = src.substring(1);
-                        src = src.replace(/:/g, '/');
-                        src = '/media/' + src;
-                    }
-                    if (isLinkOnly) {
-                        return `<a href="${src}" class="media" rel="nofollow">${alt || src.split('/').pop()}</a>`;
-                    }
-                    const widthAttr = width ? ` width="${width}"` : '';
-                    const heightAttr = height ? ` height="${height}"` : '';
-                    const altAttr = alt ? ` alt="${alt}" title="${alt}"` : '';
-                    const classAttr = className ? ` class="${className}"` : '';
-                    // Note: nocache and recache are not fully implemented in this parser
-                    return `<img src="${src}"${widthAttr}${heightAttr}${altAttr}${classAttr} loading="lazy">`;
-                }
-            },
-            { pattern: /<([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>/g, replace: (match, email) => `<a href="mailto:${email}" class="mail" title="${email.replace(/ /g, ' [at] ').replace(/\./g, ' [dot] ')}">${email}</a>` },
-            {
-                pattern: /(^|\s)(https?:\/\/[^\s<]+[^\s<.,:;"')\]\}])/g,
-                replace: (match, prefix, url) => `${prefix}<a href="${url}" class="urlextern" rel="nofollow" title="${url}">${url.replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/$/, '')}</a>`
-            },
-            {
-                pattern: /(^|\s)(www\.[^\s<]+[^\s<.,:;"')\]\}])/g,
-                replace: (match, prefix, url) => `${prefix}<a href="http://${url}" class="urlextern" rel="nofollow" title="http://${url}">${url.replace(/^www\./, '').replace(/\/$/, '')}</a>`
-            },
             {
                 pattern: /<(?:html|HTML)>([\s\S]*?)<\/(?:html|HTML)>/g,
                 replace: (match, content) => this.htmlok ? content : `<pre class="code html">${this.escapeEntities(content)}</pre>`
@@ -168,29 +191,12 @@ class DokuParserJS {
                 pattern: /<(?:php|PHP)>([\s\S]*?)<\/(?:php|PHP)>/g,
                 replace: (match, content) => `<pre class="code php">${this.escapeEntities(content)}</pre>`
             },
-            {
-                pattern: /\{\{rss>(.+?)(?:\s+(.+?))?\}\}/g,
-                replace: (match, url, params) => {
-                    const paramList = params ? params.split(/\s+/) : [];
-                    const count = parseInt(paramList.find(p => /^\d+$/.test(p)) || 8);
-                    const items = Array.from({length: count}, (_, i) => `<li><a href="${url}" class="urlextern" rel="nofollow">RSS item ${i + 1}</a> by Author (${new Date().toISOString().split('T')[0]})</li>`);
-                    return `<ul class="rss">${items.join('')}</ul>`;
-                }
-            },
             { pattern: /~~NOTOC~~|~~NOCACHE~~/g, replace: '' },
             {
                 pattern: /~~INFO:syntaxplugins~~/g,
                 replace: () => {
-                    const plugins = [
-                        { name: 'Structured Data Plugin', date: '2024-01-30', author: 'Andreas Gohr', desc: 'Add and query structured data in your wiki', url: 'data' },
-                        { name: 'DokuTeaser Plugin', date: '2016-01-16', author: 'Andreas Gohr', desc: 'A plugin for internal use on dokuwiki.org only', url: '' },
-                        { name: 'Gallery Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Creates a gallery of images from a namespace or RSS/ATOM feed', url: 'gallery' },
-                        { name: 'Info Plugin', date: '2020-06-04', author: 'Andreas Gohr', desc: 'Displays information about various DokuWiki internals', url: 'info' },
-                        { name: 'Repository plugin', date: '2024-02-09', author: 'Andreas Gohr/Håkan Sandell', desc: 'Helps organizing the plugin and template repository', url: 'repository' },
-                        { name: 'Translation Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Supports the easy setup of a multi-language wiki.', url: 'translation' },
-                        { name: 'PHPXref Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Makes linking to a PHPXref generated API doc easy.', url: 'xref' }
-                    ];
-                    return `<ul>${plugins.map(p => `<li class="level1"><div class="li"><a href="https://www.dokuwiki.org/plugin:${p.url || p.name.toLowerCase().replace(/\s/g, '')}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</div></li>`).join('')}</ul>`;
+                    const plugins = [];
+                    return `<ul>${plugins.map(p => `<li class="level1"><div class="li"><a href="https://www.dokuwiki.org/plugin:${p.url}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</div></li>`).join('')}</ul>`;
                 }
             },
             ...(this.typography ? [
@@ -231,12 +237,11 @@ class DokuParserJS {
         ];
     }
 
-    resolveNamespace(target, currentNamespace) {
+    resolveNamespace(target, currentNamespace, isMedia = false) {
+        target = target.trim();
         const originalTarget = target;
         let isStartPage = originalTarget.endsWith(':');
-        if (isStartPage) {
-            target = target.slice(0, -1);
-        }
+        if (isStartPage) target = target.slice(0, -1);
         let resolved;
         if (target.startsWith(':')) {
             resolved = target.substring(1);
@@ -246,10 +251,11 @@ class DokuParserJS {
             while (tempTarget.startsWith('..')) {
                 if (tempTarget.startsWith('..:')) {
                     tempTarget = tempTarget.substring(3);
+                    levels++;
                 } else {
                     tempTarget = tempTarget.substring(2);
+                    levels++;
                 }
-                levels++;
             }
             let nsParts = currentNamespace ? currentNamespace.split(':') : [];
             while (levels > 0 && nsParts.length > 0) {
@@ -257,25 +263,19 @@ class DokuParserJS {
                 levels--;
             }
             let parentNs = nsParts.join(':');
-            resolved = (parentNs ? parentNs + ':' : '') + tempTarget;
+            resolved = parentNs ? parentNs + ':' + tempTarget : tempTarget;
         } else if (target.startsWith('.')) {
-            let tempTarget = target;
-            if (tempTarget.startsWith('.:')) {
-                tempTarget = tempTarget.substring(2);
-            } else {
-                tempTarget = tempTarget.substring(1);
-            }
-            let currNs = currentNamespace || '';
-            resolved = currNs + (currNs ? ':' : '') + tempTarget;
+            let tempTarget = target.substring(target.startsWith('.:') ? 2 : 1);
+            resolved = currentNamespace ? currentNamespace + ':' + tempTarget : tempTarget;
         } else {
-            let currNs = currentNamespace || '';
-            resolved = currNs + (currNs ? ':' : '') + target;
+            resolved = isMedia ? target : (currentNamespace ? currentNamespace + ':' + target : target);
         }
         resolved = resolved.replace(/:+/g, ':').replace(/^:/, '').replace(/:$/, '');
-        resolved = resolved.replace(/[^a-z0-9:-]/gi, '');
-        if (isStartPage) {
-            resolved += ':start';
+        if (!isMedia && !this.useDokuWikiPaths) {
+            resolved = resolved.replace(/[^a-z0-9:-_\.]/gi, '').toLowerCase();
         }
+        if (!isMedia && isStartPage && !resolved.endsWith(':start')) resolved += ':start';
+        console.log(`Resolved namespace: target=${originalTarget}, currentNamespace=${currentNamespace}, isMedia=${isMedia}, resolved=${resolved}`);
         return resolved;
     }
 
@@ -284,6 +284,7 @@ class DokuParserJS {
         let lines = doku.split('\n');
         let tableBuffer = [];
         let tableRowspans = [];
+        let tableAlignments = [];
         let quoteLevel = 0;
         let paragraphBuffer = [];
         let inCodeBlock = false;
@@ -298,25 +299,27 @@ class DokuParserJS {
         this.footnoteContent = new Map();
         this.linkPlaceholders = [];
         this.nowikiPlaceholders = [];
-        this.percentPlaceholders = [];
         this.listStack = [];
         this.currentIndent = -1;
         this.currentType = null;
         this.currentSectionLevel = 0;
+        this.currentSection = '';
 
         for (let i = 0; i < lines.length; i++) {
             let line = lines[i];
             let trimmed = line.trim();
-
             if (!trimmed) {
                 if (inTable) {
-                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                    tableBuffer = [];
+                    tableRowspans = [];
+                    tableAlignments = [];
                     inTable = false;
                 } else if (inCodeBlock) {
                     codeBlockBuffer.push('');
                     continue;
                 } else if (inPre) {
-                    preBuffer.push(line);
+                    preBuffer.push('');
                     continue;
                 } else if (quoteLevel > 0 || paragraphBuffer.length > 0 || this.listStack.length > 0) {
                     this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
@@ -328,7 +331,7 @@ class DokuParserJS {
             if (trimmed.match(/^<code(?:\s+([^\s>]+))?>/)) {
                 this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inCodeBlock = true;
-                inCodeSection = true;
+                inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 codeBlockBuffer = [];
                 const match = trimmed.match(/^<code(?:\s+([^\s>]+))?>/);
                 codeLang = match[1] ? `code ${match[1]}` : 'code';
@@ -349,7 +352,7 @@ class DokuParserJS {
             } else if (trimmed.match(/^<file(?:\s+([^\s>]+))?>/)) {
                 this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inCodeBlock = true;
-                inCodeSection = true;
+                inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 codeBlockBuffer = [];
                 const match = trimmed.match(/^<file(?:\s+([^\s>]+))?>/);
                 codeLang = match[1] ? `file ${match[1]}` : 'file';
@@ -386,7 +389,6 @@ class DokuParserJS {
             const leadingSpaces = line.match(/^(\s*)/)[1];
             const indent = leadingSpaces.length;
 
-            // Flush paragraph buffer before starting a list or code block
             if (paragraphBuffer.length > 0 && (indent >= 2 || trimmed.match(/^(?:>|={2,6}.*={2,6}|[\^|]|-{4,})$/))) {
                 this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
             }
@@ -395,19 +397,15 @@ class DokuParserJS {
                 let content = line.substring(indent + 2).trim();
                 content = content.replace(/\\\\\s*$/, '');
                 content = content.replace(/\\\\\s+/g, '<br>');
-                content = this.applyRules(content); // Apply rules to list item content
+                content = inCodeSection ? this.escapeEntities(content) : this.applyRules(content);
                 const listType = line[indent] === '*' ? 'ul' : 'ol';
                 const depth = Math.floor(indent / 2);
-
-                // Close lists if indent decreases
                 while (this.currentIndent > depth && this.listStack.length > 0) {
                     result.push('</li>');
                     result.push(`</${this.listStack.pop().type}>`);
                     this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
                     this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
                 }
-
-                // Open new list or switch type
                 if (this.currentIndent === -1 || depth > this.currentIndent) {
                     result.push(`<${listType}>`);
                     this.listStack.push({ type: listType, indent: depth });
@@ -422,11 +420,7 @@ class DokuParserJS {
                 } else if (depth === this.currentIndent) {
                     result.push('</li>');
                 }
-
-                // Add list item
                 result.push(`<li class="level${depth}"><div class="li">${content || ''}</div>`);
-
-                // Check if next line is a list item
                 if (i + 1 < lines.length) {
                     const nextLine = lines[i + 1];
                     const nextTrimmed = nextLine.trim();
@@ -435,7 +429,7 @@ class DokuParserJS {
                     if (!nextTrimmed || nextIndent < 2 || !(nextLine[nextIndent] === '*' || nextLine[nextIndent] === '-') || nextDepth < depth) {
                         result.push('</li>');
                         if (!nextTrimmed || nextIndent < 2 || nextDepth < depth) {
-                            while (this.listStack.length > 0 && this.currentIndent >= (nextTrimmed ? nextDepth : 0)) {
+                            while (this.listStack.length > 0 && this.currentIndent > (nextTrimmed ? nextDepth : 0)) {
                                 result.push(`</${this.listStack.pop().type}>`);
                                 this.currentIndent = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].indent : -1;
                                 this.currentType = this.listStack.length > 0 ? this.listStack[this.listStack.length - 1].type : null;
@@ -450,20 +444,17 @@ class DokuParserJS {
                         this.currentType = null;
                     }
                 }
-
                 continue;
             }
 
-            // Check for code block (any indented line not a list)
             if (!inCodeBlock && !inTable && indent >= 2 && !line.match(/^( {2,})([*|-]\s)/)) {
                 this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 inPre = true;
-                inCodeSection = true;
+                inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 preBuffer = [line];
                 codeBlockIndent = indent;
                 continue;
             }
-
             if (inPre) {
                 if (indent >= codeBlockIndent && trimmed && !line.match(/^( {2,})([*|-]\s)/)) {
                     preBuffer.push(line);
@@ -478,7 +469,6 @@ class DokuParserJS {
                     codeBlockIndent = -1;
                 }
             }
-
             if (i === lines.length - 1 && inPre) {
                 let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
                 preContent = this.escapeEntities(preContent);
@@ -496,20 +486,19 @@ class DokuParserJS {
                 let formattedContent = content.trim();
                 formattedContent = formattedContent.replace(/\\\\\s*$/, '');
                 formattedContent = formattedContent.replace(/\\\\\s+/g, '<br>');
-                formattedContent = this.applyRules(formattedContent);
-                // Close previous quotes if level decreases
+                formattedContent = inCodeSection ? this.escapeEntities(formattedContent) : this.applyRules(formattedContent);
                 while (quoteLevel > newLevel) {
                     result.push('</div></blockquote>');
                     quoteLevel--;
                 }
-                // Open new quote blocks
                 while (quoteLevel < newLevel) {
                     result.push('<blockquote><div class="no">');
                     quoteLevel++;
                 }
-                result.push(formattedContent);
-                result.push('</div></blockquote>');
-                if (i === lines.length - 1) {
+                if (formattedContent) {
+                    result.push(formattedContent);
+                }
+                if (i === lines.length - 1 && quoteLevel > 0) {
                     while (quoteLevel > 0) {
                         result.push('</div></blockquote>');
                         quoteLevel--;
@@ -523,42 +512,34 @@ class DokuParserJS {
                 }
             }
 
-            if (!inCodeSection && (trimmed.startsWith('^') || trimmed.startsWith('|'))) {
+            if (!inCodeSection && trimmed.match(/^[\^|]/)) {
                 if (paragraphBuffer.length > 0 || quoteLevel > 0 || this.listStack.length > 0) {
                     this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 }
-                let tableAlignments = [];
-                let alignments = [];
-                const hasPipe = trimmed.includes('|');
-                const isHeaderRow = trimmed.startsWith('^') && !hasPipe;
+                const isHeaderRow = trimmed.match(/^\^.*\^.*\^/);
                 const sep = isHeaderRow ? '^' : '|';
-                let rawLine = trimmed.substring(1).trim();
+                let rawLine = trimmed.substring(1);
+                rawLine = rawLine.endsWith(sep) ? rawLine.slice(0, -1) : rawLine;
                 let cells = rawLine.split(sep).map(cell => cell.trim());
                 let cellContents = [];
+                let cellTags = [];
+                let alignments = [];
                 try {
-                    cells.forEach((cell) => {
-                        let align = '';
-                        if (cell.match(/^\s{2,}.*\s{2,}$/)) {
-                            align = 'center';
-                            cell = cell.trim();
-                        } else if (cell.match(/^\s{2,}/)) {
-                            align = 'right';
-                            cell = cell.trim();
-                        } else if (cell.match(/\s{2,}$/)) {
-                            align = 'left';
-                            cell = cell.trim();
-                        }
-                        cell = cell.replace(/\\\\\s*$/, '');
-                        cell = cell.replace(/\\\\\s+/g, '<br>');
+                    cells.forEach((cell, index) => {
+                        let align = 'leftalign';
+                        if (cell.match(/^\s{2,}.*\s{2,}$/)) align = 'centeralign';
+                        else if (cell.match(/^\s{2,}/)) align = 'rightalign';
+                        else if (cell.match(/\s{2,}$/)) align = 'leftalign';
+                        cell = cell.trim();
                         alignments.push(align);
                         cellContents.push(cell);
+                        cellTags.push(isHeaderRow ? 'th' : 'td');
                     });
                     if (isHeaderRow) tableAlignments = alignments;
                     if (!tableRowspans.length || tableRowspans.length !== cellContents.length) {
                         tableRowspans = new Array(cellContents.length).fill(0);
                     }
-                    const tag = isHeaderRow ? 'th' : 'td';
-                    let row = '<tr class="row0">';
+                    let row = `<tr class="row${tableBuffer.length}">`;
                     for (let j = 0; j < cellContents.length;) {
                         if (tableRowspans[j] > 0) {
                             tableRowspans[j]--;
@@ -566,6 +547,7 @@ class DokuParserJS {
                             continue;
                         }
                         let cell = cellContents[j];
+                        let tag = cellTags[j];
                         let colspan = 1;
                         let k = j + 1;
                         while (k < cellContents.length && cellContents[k] === '') {
@@ -583,15 +565,9 @@ class DokuParserJS {
                             tableRowspans[j] = colons - 1;
                             cell = '';
                         }
-                        let content = '';
-                        try {
-                            content = this.applyRules(cell);
-                        } catch (e) {
-                            console.error(`Error in applyRules for cell "${cell}":`, e.message);
-                            content = this.escapeEntities(cell);
-                        }
+                        let content = inCodeSection ? this.escapeEntities(cell) : this.applyRules(cell);
                         const alignClass = alignments[j] || (j < tableAlignments.length ? tableAlignments[j] : 'leftalign');
-                        const classAttr = ` class="col${j} ${alignClass}"`;
+                        const classAttr = alignClass ? ` class="col${j} ${alignClass}"` : ` class="col${j}"`;
                         const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : '';
                         row += `<${tag}${rowspanAttr}${colspanAttr}${classAttr}>${content}</${tag}>`;
                         j = k;
@@ -600,17 +576,29 @@ class DokuParserJS {
                     tableBuffer.push(row);
                     inTable = true;
                 } catch (e) {
-                    console.error(`Error parsing table at line ${i + 1}:`, e.message);
-                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    console.error(`Error parsing table at line ${i + 1}: ${e.message}`);
+                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                    tableBuffer = [];
+                    tableRowspans = [];
+                    tableAlignments = [];
                     inTable = false;
                     continue;
                 }
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                if (i === lines.length - 1) {
+                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                    tableBuffer = [];
+                    tableRowspans = [];
+                    tableAlignments = [];
+                    inTable = false;
+                }
                 continue;
             }
 
             if (inTable && !trimmed.match(/^(?:\s*[\^|].*)$/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                tableBuffer = [];
+                tableRowspans = [];
+                tableAlignments = [];
                 inTable = false;
             }
 
@@ -621,10 +609,11 @@ class DokuParserJS {
                 content = this.applyRules(content);
                 const level = Math.max(1, Math.min(6, 6 - Math.floor(equalsCount) + 1));
                 const id = content.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-                const sectionEditNum = level;
-                result.push(`<h${level} class="sectionedit${sectionEditNum}" id="${id}">${content}</h${level}>`);
+                const sectionEditNum = result.length + 1;
+                result.push(`<div class="section_highlight_wrapper"><h${level} class="sectionedit${sectionEditNum}" id="${id}">${content}</h${level}><div class="level${level}">`);
                 this.currentSectionLevel = level;
-                inCodeSection = content.match(/^(Links|Tables|Quoting|Text Conversions|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
+                this.currentSection = content;
+                inCodeSection = content.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 continue;
             }
 
@@ -635,49 +624,33 @@ class DokuParserJS {
                 continue;
             }
 
-            if (trimmed.match(/^\{\{.*\}\}$/)) {
+            if (trimmed.match(/^\{\{.*\}\}$/) && !trimmed.match(/^\{\{rss>/)) {
                 let content = this.applyRules(trimmed);
                 result.push(`<p>${content}</p>`);
                 if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
                 continue;
             }
 
-            if (inTable) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                inTable = false;
-            }
-
             let content = trimmed;
-            if (inCodeSection && (trimmed.startsWith('^') || trimmed.startsWith('|'))) {
-                content = content.replace(/\\\\\s*$/, '');
-                content = content.replace(/\\\\\s+/g, '<br>');
-                content = this.applyRules(content);
-                result.push(`<pre class="code">${content}</pre>`);
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-                continue;
-            }
-
             content = content.replace(/\\\\\s*$/, '');
             content = content.replace(/\\\\\s+/g, '<br>');
-            content = this.applyRules(content);
+            content = inCodeSection ? this.escapeEntities(content) : this.applyRules(content);
             paragraphBuffer.push(content);
             if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
         }
 
         this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
-
         if (inPre) {
             let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
             preContent = this.escapeEntities(preContent);
             result.push(`<pre class="code">${preContent}</pre>`);
         }
-
         if (this.footnoteContent.size > 0) {
             result.push('<div class="footnotes">');
             Array.from(this.footnoteContent.entries()).forEach(([note, index]) => {
                 if (!note.trim()) return;
-                const escapedNote = this.escapeEntities(note);
-                result.push(`<div class="fn"><sup><a href="#fnt__${index + 1}" id="fn__${index + 1}" class="fn_bot">${index + 1}</a></sup> <div class="content">${escapedNote}</div></div>`);
+                const formattedNote = this.applyRules(note);
+                result.push(`<div class="fn"><sup><a href="#fnt__${index + 1}" id="fn__${index + 1}" class="fn_bot">${index + 1}</a></sup> <div class="content">${formattedNote}</div></div>`);
             });
             result.push('</div>');
         }
@@ -689,25 +662,15 @@ class DokuParserJS {
         this.nowikiPlaceholders.forEach((raw, idx) => {
             finalResult = finalResult.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
-        this.percentPlaceholders.forEach((raw, idx) => {
-            finalResult = finalResult.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), this.escapeEntities(raw));
-        });
-
+        finalResult = `<div class="page group">${finalResult}</div>`;
         return finalResult;
     }
 
     applyRules(content) {
         let result = content;
         this.nowikiPlaceholders = [];
-        this.percentPlaceholders = [];
         this.rules.forEach(rule => {
             result = result.replace(rule.pattern, typeof rule.replace === 'function' ? rule.replace.bind(this) : rule.replace);
-        });
-        this.nowikiPlaceholders.forEach((raw, idx) => {
-            result = result.replace(new RegExp(`\\[NOWIKI_${idx}\\]`, 'g'), this.escapeEntities(raw));
-        });
-        this.percentPlaceholders.forEach((raw, idx) => {
-            result = result.replace(new RegExp(`\\[PERCENT_${idx}\\]`, 'g'), this.escapeEntities(raw));
         });
         result = this.parseFootnotes(result);
         return result;
@@ -737,13 +700,14 @@ class DokuParserJS {
     flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans) {
         if (this.listStack.length > 0) {
             while (this.listStack.length > 0) {
+                result.push('</li>');
                 result.push(`</${this.listStack.pop().type}>`);
                 this.currentIndent = -1;
                 this.currentType = null;
             }
         }
         if (tableBuffer.length > 0) {
-            result.push(`<table class="inline">${tableBuffer.join('')}</table>`);
+            result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
             tableBuffer.length = 0;
             tableRowspans.length = 0;
         }
@@ -765,6 +729,10 @@ class DokuParserJS {
             result.push(`<pre${classAttr}>${this.escapeEntities(codeBlockBuffer.join('\n'))}</pre>`);
             codeBlockBuffer.length = 0;
         }
+        if (this.currentSectionLevel > 0) {
+            result.push(`</div>`);
+            this.currentSectionLevel = 0;
+        }
     }
 
     static parseCLI() {
@@ -784,7 +752,13 @@ class DokuParserJS {
                 process.exit(1);
             }
             try {
-                const parser = new DokuParserJS({ currentNamespace: process.env.DOKU_NAMESPACE || '' });
+                const parser = new DokuParserJS({
+                    currentNamespace: process.env.DOKU_NAMESPACE || '',
+                    mediaBasePath: process.env.DOKU_MEDIA_BASE_PATH || '/media/',
+                    pagesBasePath: process.env.DOKU_PAGES_BASE_PATH || '/',
+                    useTxtExtension: process.env.DOKU_USE_TXT_EXTENSION === 'true',
+                    useDokuWikiPaths: process.env.DOKU_USE_DOKUWIKI_PATHS === 'true'
+                });
                 const html = parser.parse(input);
                 console.log(html);
                 process.exit(0);

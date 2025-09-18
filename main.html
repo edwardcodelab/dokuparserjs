@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DokuWiki Reader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/feather-icons/dist/feather.min.js"></script>
+    <style>
+        .sidebar {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 #1f2937;
+        }
+        .sidebar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .sidebar::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+        .sidebar::-webkit-scrollbar-thumb {
+            background-color: #4b5563;
+            border-radius: 3px;
+        }
+        .content {
+            scrollbar-width: thin;
+            scrollbar-color: #4b5563 #f3f4f6;
+        }
+        .content::-webkit-scrollbar {
+            width: 6px;
+        }
+        .content::-webkit-scrollbar-track {
+            background: #f3f4f6;
+        }
+        .content::-webkit-scrollbar-thumb {
+            background-color: #4b5563;
+            border-radius: 3px;
+        }
+        .active-page {
+            background-color: #374151;
+            border-left: 3px solid #60a5fa;
+        }
+        #content {
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #333;
+        }
+        #content h1 { font-size: 1.8em; font-weight: bold; color: #1f3540; margin: 1em 0 0.5em; }
+        #content h2 { font-size: 1.5em; font-weight: bold; color: #1f3540; margin: 0.8em 0 0.4em; }
+        #content h3 { font-size: 1.3em; font-weight: bold; color: #1f3540; margin: 0.7em 0 0.3em; }
+        #content h4 { font-size: 1.1em; font-weight: bold; color: #1f3540; margin: 0.6em 0 0.3em; }
+        #content h5 { font-size: 1em; font-weight: bold; color: #1f3540; margin: 0.5em 0 0.2em; }
+        #content h6 { font-size: 0.9em; font-weight: bold; color: #1f3540; margin: 0.5em 0 0.2em; }
+        #content p { margin: 0.5em 0; }
+        #content ul { list-style: disc outside; margin: 0.5em 0 0.5em 1.5em; padding-left: 0; }
+        #content ol { list-style: decimal outside; margin: 0.5em 0 0.5em 1.5em; padding-left: 0; }
+        #content li { margin: 0.2em 0; }
+        #content li div.li { display: inline; margin: 0; padding: 0; }
+        #content li.level1 div.li { margin-left: 0; }
+        #content li.level2 div.li { margin-left: 1.5em; }
+        #content li.level3 div.li { margin-left: 3em; }
+        #content blockquote { border-left: 3px solid #999; padding-left: 1em; margin: 0.5em 0 0.5em 1em; background: #f7f9fa; font-style: italic; }
+        #content blockquote .no { display: block; }
+        #content a { color: #0000ff; text-decoration: none; }
+        #content a:hover { text-decoration: underline; }
+        #content a.interwiki, #content a.urlextern { text-decoration: underline; }
+        #content a.wikilink2 { color: #cc0000; text-decoration: underline; }
+        #content pre.code, #content pre.file { background: #f7f9fa; border: 1px solid #d7d9da; padding: 0.5em; font-family: monospace; font-size: 90%; overflow-x: auto; }
+        #content table.inline { border-collapse: collapse; border: 1px solid #dee7e7; width: 100%; margin: 0.5em 0; }
+        #content table.inline th, #content table.inline td { border: 1px solid #dee7e7; padding: 0.3em 0.5em; }
+        #content table.inline th { background: #e0e5e5; font-weight: bold; }
+        #content table.inline td.leftalign { text-align: left; }
+        #content table.inline td.centeralign { text-align: center; }
+        #content table.inline td.rightalign { text-align: right; }
+        #content img { margin: 0.5em 0; max-width: 100%; }
+        #content img.mediacenter { display: block; margin: 0.5em auto; }
+        #content img.medialeft { float: left; margin-right: 1em; max-width: 50%; }
+        #content img.mediaright { float: right; margin-left: 1em; max-width: 50%; }
+        #content hr { border-top: 1px solid #ccc; margin: 1em 0; }
+        #content .footnotes { margin-top: 1em; border-top: 1px solid #ccc; padding-top: 0.5em; }
+        #content .fn { margin: 0.5em 0; }
+        #content .fn sup { font-size: 80%; }
+        #content .fn a.fn_bot { color: #0000ff; text-decoration: none; }
+        .directory .children { display: none; }
+        .directory.expanded .children { display: block; }
+        #search-input { width: 100%; padding: 0.5em 2.5em 0.5em 0.5em; border: 1px solid #4b5563; border-radius: 4px; background: #374151; color: #e5e7eb; }
+        #search-input:focus { outline: none; ring: 2px solid #60a5fa; }
+        #search-results { max-height: 200px; overflow-y: auto; }
+        #search-results li { padding: 0.5em 1em; }
+        @media (max-width: 640px) {
+            .sidebar { width: 100%; max-height: 50vh; display: none; }
+            .sidebar.active { display: flex; }
+            .content { width: 100%; }
+        }
+    </style>
+</head>
+<body class="flex flex-row min-h-screen bg-gray-100">
+    <aside class="sidebar w-64 bg-gray-800 text-gray-200 flex flex-col h-full overflow-y-auto">
+        <div class="p-4 border-b border-gray-700">
+            <h1 class="text-xl font-bold flex items-center">
+                <i data-feather="book" class="mr-2"></i>
+                DokuWiki
+            </h1>
+        </div>
+        <div class="p-4 border-b border-gray-700">
+            <div class="relative">
+                <input type="text" id="search-input" placeholder="Search pages..." 
+                    class="w-full bg-gray-700 text-gray-200 px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <i data-feather="search" class="absolute right-3 top-2.5 text-gray-400"></i>
+            </div>
+            <div id="search-results" class="text-sm mt-2"></div>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+            <div class="space-y-1 p-2">
+                <div class="text-gray-400 uppercase text-xs font-semibold px-3 py-2">Pages</div>
+                <ul id="file-tree" class="text-sm"></ul>
+            </div>
+        </div>
+        <div class="p-4 border-t border-gray-700 text-sm text-gray-400">
+            <div class="flex items-center justify-between">
+                <span>v1.0.0</span>
+                <button class="text-gray-400 hover:text-white">
+                    <i data-feather="settings"></i>
+                </button>
+            </div>
+        </div>
+    </aside>
+    <div class="flex-1 flex flex-col content">
+        <div class="bg-white border-b border-gray-200 p-4 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <button class="p-2 rounded-lg hover:bg-gray-100 md:hidden" id="mobile-menu-button">
+                    <i data-feather="menu"></i>
+                </button>
+                <div class="text-sm text-gray-500">
+                    <span id="page-title">Welcome</span>
+                </div>
+            </div>
+        </div>
+        <main class="flex-1 p-6 overflow-y-auto content">
+            <div id="content" class="max-w-none">Loading...</div>
+        </main>
+    </div>
+    <script src="dokuparserjs.js" onerror="document.getElementById('content').innerHTML='<p class=\"text-red-600\">Error: Failed to load dokuparserjs.js. Ensure it exists in the project root.</p>'"></script>
+    <script>
+        feather.replace();
+        const BASE_PATH = 'data/pages';
+        const DEFAULT_PAGE = 'data/pages/wiki/welcome.txt';
+        let fileTreeData = []; // Cache all .txt files recursively
+        let directoryData = []; // Cache directory paths
+
+        async function getDirectoryContents(dirname) {
+            console.log(`Fetching directory: ${dirname}`);
+            try {
+                const decodedDirname = decodeURIComponent(dirname);
+                const response = await fetch(decodedDirname.endsWith('/') ? decodedDirname : `${decodedDirname}/`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const html = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const links = doc.querySelectorAll('ul li a');
+                const contents = [];
+                for (let link of links) {
+                    let name = decodeURIComponent(link.innerHTML.trim());
+                    if (name === '../') continue;
+                    const isDir = name.endsWith('/');
+                    if (isDir) name = name.slice(0, -1);
+                    contents.push({ name, isDir, path: `${dirname}/${encodeURIComponent(name)}` });
+                }
+                console.log(`Directory contents for ${dirname}:`, contents);
+                return contents;
+            } catch (error) {
+                console.warn(`Warning: Failed to fetch directory ${dirname}: ${error.message}`);
+                return [];
+            }
+        }
+
+        async function collectAllFiles(dirname, parentPath = '') {
+            const contents = await getDirectoryContents(dirname);
+            const files = [];
+            for (const item of contents) {
+                const displayName = decodeURIComponent(item.name);
+                const fullPath = parentPath ? `${parentPath}/${displayName}` : displayName;
+                if (item.isDir) {
+                    directoryData.push({ name: displayName, path: item.path, displayPath: fullPath });
+                    const subFiles = await collectAllFiles(item.path, fullPath);
+                    files.push(...subFiles);
+                } else if (item.name.endsWith('.txt')) {
+                    files.push({ name: displayName, path: item.path, displayPath: fullPath });
+                }
+            }
+            return files;
+        }
+
+        async function buildTreeAsync(dirname, parentUl) {
+            try {
+                if (!fileTreeData.length) {
+                    directoryData = [];
+                    fileTreeData = await collectAllFiles(dirname);
+                    console.log('Collected all files:', fileTreeData);
+                    console.log('Collected directories:', directoryData);
+                }
+                
+                const tree = {};
+                fileTreeData.forEach(file => {
+                    const parts = file.displayPath.split('/');
+                    let current = tree;
+                    parts.forEach((part, index) => {
+                        if (index === parts.length - 1) {
+                            current[part] = { path: file.path, isDir: false };
+                        } else {
+                            if (!current[part]) current[part] = { children: {}, isDir: true };
+                            current = current[part].children;
+                        }
+                    });
+                });
+
+                parentUl.innerHTML = '';
+                function renderTree(node, ul, prefix = '') {
+                    Object.entries(node).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, data]) => {
+                        const li = document.createElement('li');
+                        li.className = 'py-1';
+                        if (data.isDir) {
+                            li.innerHTML = `<a href="#" class="block px-4 py-2 text-gray-200 hover:bg-gray-700 rounded"><i data-feather="folder" class="inline mr-2 w-4 h-4"></i>${name}/</a>`;
+                            const subUl = document.createElement('ul');
+                            subUl.className = 'pl-4';
+                            li.appendChild(subUl);
+                            ul.appendChild(li);
+                            li.querySelector('a').addEventListener('click', async (e) => {
+                                e.preventDefault();
+                                if (!li.classList.contains('expanded')) {
+                                    li.classList.add('expanded');
+                                    renderTree(data.children, subUl, `${prefix}/${encodeURIComponent(name)}`);
+                                } else {
+                                    li.classList.remove('expanded');
+                                    subUl.innerHTML = '';
+                                }
+                            });
+                        } else {
+                            li.innerHTML = `<a href="#" class="block px-4 py-2 text-gray-200 hover:bg-gray-700 rounded" data-path="${data.path}"><i data-feather="file-text" class="inline mr-2 w-4 h-4"></i>${name}</a>`;
+                            ul.appendChild(li);
+                        }
+                    });
+                }
+                renderTree(tree, parentUl, dirname);
+                feather.replace(); // Re-render icons after tree update
+            } catch (error) {
+                parentUl.innerHTML += `<li class="text-red-500 px-4 py-2">Error loading ${dirname}: ${error.message}</li>`;
+            }
+        }
+
+        function renderSearchResults(filter = '') {
+            const resultsDiv = document.getElementById('search-results');
+            resultsDiv.innerHTML = '';
+            if (!filter) return;
+
+            const filteredFiles = fileTreeData.filter(file => file.displayPath.toLowerCase().includes(filter.toLowerCase()));
+            const filteredDirs = directoryData.filter(dir => dir.displayPath.toLowerCase().includes(filter.toLowerCase()));
+            
+            if (filteredFiles.length || filteredDirs.length) {
+                const ul = document.createElement('ul');
+                ul.className = 'space-y-1';
+                filteredDirs.forEach(dir => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<a href="#" class="block px-4 py-2 text-gray-200 hover:bg-gray-700 rounded"><i data-feather="folder" class="inline mr-2 w-4 h-4"></i>${dir.displayPath}/</a>`;
+                    ul.appendChild(li);
+                });
+                filteredFiles.forEach(file => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `<a href="#" class="block px-4 py-2 text-gray-200 hover:bg-gray-700 rounded" data-path="${file.path}"><i data-feather="file-text" class="inline mr-2 w-4 h-4"></i>${file.name}</a>`;
+                    ul.appendChild(li);
+                    li.querySelector('a').addEventListener('click', async (e) => {
+                        e.preventDefault();
+                        const path = file.path;
+                        document.querySelectorAll('.sidebar a').forEach(i => i.classList.remove('active-page'));
+                        li.querySelector('a').classList.add('active-page');
+                        const treeLink = document.querySelector(`#file-tree a[data-path="${path}"]`);
+                        if (treeLink) treeLink.classList.add('active-page');
+                        document.getElementById('page-title').textContent = decodeURIComponent(path.split('/').pop().replace('.txt', ''));
+                        await loadPage(path);
+                    });
+                });
+                resultsDiv.appendChild(ul);
+                feather.replace(); // Re-render icons in search results
+            } else {
+                resultsDiv.innerHTML = '<p class="px-4 py-2 text-gray-400">No results found</p>';
+            }
+        }
+
+        const fileTree = document.getElementById('file-tree');
+        const searchInput = document.getElementById('search-input');
+        buildTreeAsync(BASE_PATH, fileTree).then(() => {
+            loadPage(DEFAULT_PAGE);
+        });
+
+        searchInput.addEventListener('input', (e) => {
+            const filter = e.target.value.trim();
+            renderSearchResults(filter);
+        });
+
+        fileTree.addEventListener('click', async (e) => {
+            if (e.target.tagName === 'A' && e.target.dataset.path && e.target.dataset.path.endsWith('.txt')) {
+                e.preventDefault();
+                const path = e.target.dataset.path;
+                console.log(`Fetching file from tree: ${path}`);
+                document.querySelectorAll('.sidebar a').forEach(i => i.classList.remove('active-page'));
+                e.target.classList.add('active-page');
+                document.getElementById('page-title').textContent = decodeURIComponent(path.split('/').pop().replace('.txt', ''));
+                await loadPage(path);
+            }
+        });
+
+        document.getElementById('content').addEventListener('click', async (e) => {
+            if (e.target.tagName === 'A' && (e.target.classList.contains('wikilink1') || e.target.classList.contains('wikilink2'))) {
+                e.preventDefault();
+                let href = e.target.getAttribute('href');
+                if (!href.endsWith('.txt')) href += '.txt';
+                if (href.startsWith('/data/pages/')) {
+                    console.log(`Fetching page from link: ${href}`);
+                    document.querySelectorAll('.sidebar a').forEach(i => i.classList.remove('active-page'));
+                    const link = document.querySelector(`.sidebar a[data-path="${href}"]`);
+                    if (link) link.classList.add('active-page');
+                    document.getElementById('page-title').textContent = decodeURIComponent(href.split('/').pop().replace('.txt', ''));
+                    await loadPage(href);
+                }
+            }
+        });
+
+        document.getElementById('mobile-menu-button').addEventListener('click', () => {
+            const sidebar = document.querySelector('.sidebar');
+            sidebar.classList.toggle('active');
+        });
+
+        async function loadPage(path) {
+            try {
+                const decodedPath = decodeURIComponent(path);
+                const response = await fetch(decodedPath);
+                if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                const text = await response.text();
+                console.log(`File content fetched (${decodedPath}, ${text.length} chars)`);
+                const namespace = decodedPath.split('/').slice(2, -1).map(decodeURIComponent).join(':').replace(/^:+|:+$/g, '');
+                console.log(`Namespace: ${namespace}`);
+                if (typeof DokuParserJS === 'undefined') {
+                    throw new Error('DokuParserJS not defined. Ensure dokuparserjs.js is loaded.');
+                }
+                const parser = new DokuParserJS({
+                    currentNamespace: namespace,
+                    interwikiMap: {
+                        wp: 'https://en.wikipedia.org/wiki/',
+                        doku: 'https://www.dokuwiki.org/'
+                    },
+                    mediaBasePath: '/data/media/',
+                    pagesBasePath: '/data/pages/',
+                    useTxtExtension: true,
+                    useDokuWikiPaths: false
+                });
+                const html = parser.parse(text);
+                console.log('Parsed HTML:', html.substring(0, 100) + '...');
+                const cleanHtml = html
+                    .replace(/<div id="dw__toc"[\s\S]*?<\/div>/, '')
+                    .replace(/<div class="secedit[\s\S]*?Edit[\s\S]*?<\/div>/g, '');
+                document.getElementById('content').innerHTML = cleanHtml;
+                console.log('CSS applied to content:', document.getElementById('content').innerHTML.substring(0, 100) + '...');
+            } catch (error) {
+                console.error('Error processing page:', error);
+                document.getElementById('content').innerHTML = `<p class="text-red-600">Error loading ${path}: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
