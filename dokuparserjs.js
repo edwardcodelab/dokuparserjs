@@ -1,6 +1,5 @@
 /**
  * DokuParserJS: A lightweight JavaScript class for parsing DokuWiki markup into HTML.
- * Version 9: Fixed section links and table parsing issues.
  *
  * @param {Object} [options] - Parser options.
  * @param {string} [options.currentNamespace=''] - Current namespace for link resolution.
@@ -22,9 +21,9 @@ class DokuParserJS {
         this.htmlok = options.htmlok !== false;
         this.typography = options.typography !== false;
         this.mediaBasePath = options.mediaBasePath?.trim()
-            ? options.mediaBasePath.replace(/\/+$/, '') + '/' : '/media/';
+            ? options.mediaBasePath.replace(/\/+$/, '') + '/' : '/data/media/';
         this.pagesBasePath = options.pagesBasePath?.trim()
-            ? options.pagesBasePath.replace(/\/+$/, '') + '/' : '/';
+            ? options.pagesBasePath.replace(/\/+$/, '') + '/' : '/data/pages/';
         this.useTxtExtension = options.useTxtExtension || false;
         this.useDokuWikiPaths = options.useDokuWikiPaths || false;
         this.footnotes = [];
@@ -195,7 +194,15 @@ class DokuParserJS {
             {
                 pattern: /~~INFO:syntaxplugins~~/g,
                 replace: () => {
-                    const plugins = [];
+                    const plugins = [
+                        { name: 'Structured Data Plugin', date: '2024-01-30', author: 'Andreas Gohr', desc: 'Add and query structured data in your wiki', url: 'data' },
+                        { name: 'DokuTeaser Plugin', date: '2016-01-16', author: 'Andreas Gohr', desc: 'A plugin for internal use on dokuwiki.org only', url: 'dokuteaserplugin' },
+                        { name: 'Gallery Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Creates a gallery of images from a namespace or RSS/ATOM feed', url: 'gallery' },
+                        { name: 'Info Plugin', date: '2020-06-04', author: 'Andreas Gohr', desc: 'Displays information about various DokuWiki internals', url: 'info' },
+                        { name: 'Repository plugin', date: '2024-02-09', author: 'Andreas Gohr/Håkan Sandell', desc: 'Helps organizing the plugin and template repository', url: 'repository' },
+                        { name: 'Translation Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Supports the easy setup of a multi-language wiki.', url: 'translation' },
+                        { name: 'PHPXref Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Makes linking to a PHPXref generated API doc easy.', url: 'xref' }
+                    ];
                     return `<ul>${plugins.map(p => `<li class="level1"><div class="li"><a href="https://www.dokuwiki.org/plugin:${p.url}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</div></li>`).join('')}</ul>`;
                 }
             },
@@ -243,9 +250,13 @@ class DokuParserJS {
         let isStartPage = originalTarget.endsWith(':');
         if (isStartPage) target = target.slice(0, -1);
         let resolved;
+
+        // Handle absolute paths starting with ':'
         if (target.startsWith(':')) {
             resolved = target.substring(1);
-        } else if (target.startsWith('..')) {
+        }
+        // Handle relative paths with '..'
+        else if (target.startsWith('..')) {
             let tempTarget = target;
             let levels = 0;
             while (tempTarget.startsWith('..')) {
@@ -264,12 +275,17 @@ class DokuParserJS {
             }
             let parentNs = nsParts.join(':');
             resolved = parentNs ? parentNs + ':' + tempTarget : tempTarget;
-        } else if (target.startsWith('.')) {
+        }
+        // Handle relative paths with '.'
+        else if (target.startsWith('.')) {
             let tempTarget = target.substring(target.startsWith('.:') ? 2 : 1);
             resolved = currentNamespace ? currentNamespace + ':' + tempTarget : tempTarget;
-        } else {
-            resolved = isMedia ? target : (currentNamespace ? currentNamespace + ':' + target : target);
         }
+        // Handle non-absolute paths
+        else {
+            resolved = isMedia || target.includes(':') ? target : (currentNamespace ? currentNamespace + ':' + target : target);
+        }
+
         resolved = resolved.replace(/:+/g, ':').replace(/^:/, '').replace(/:$/, '');
         if (!isMedia && !this.useDokuWikiPaths) {
             resolved = resolved.replace(/[^a-z0-9:-_\.]/gi, '').toLowerCase();
@@ -754,8 +770,8 @@ class DokuParserJS {
             try {
                 const parser = new DokuParserJS({
                     currentNamespace: process.env.DOKU_NAMESPACE || '',
-                    mediaBasePath: process.env.DOKU_MEDIA_BASE_PATH || '/media/',
-                    pagesBasePath: process.env.DOKU_PAGES_BASE_PATH || '/',
+                    mediaBasePath: process.env.DOKU_MEDIA_BASE_PATH || '/data/media/',
+                    pagesBasePath: process.env.DOKU_PAGES_BASE_PATH || '/data/pages/',
                     useTxtExtension: process.env.DOKU_USE_TXT_EXTENSION === 'true',
                     useDokuWikiPaths: process.env.DOKU_USE_DOKUWIKI_PATHS === 'true'
                 });
