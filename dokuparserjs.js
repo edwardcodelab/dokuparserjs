@@ -76,7 +76,6 @@ class DokuParserJS {
             {
                 pattern: /\{\{(\s*)([^|{}]*?)(?:\?([^|]*?))?(?:\|(.+?)?)?(\s*)\}\}/g,
                 replace: (match, leadingSpace, src, params, alt, trailingSpace) => {
-                    console.log(`Processing image: src=${src}, params=${params}, alt=${alt}`);
                     let className = '';
                     if (!leadingSpace && !trailingSpace) className = 'mediacenter';
                     else if (leadingSpace && !trailingSpace) className = 'mediaright';
@@ -107,7 +106,6 @@ class DokuParserJS {
                         filename = src.split('/').pop();
                         src = encodeURIComponent(src);
                     }
-                    console.log(`Resolved image src: ${src}, filename=${filename}`);
                     if (isLinkOnly) {
                         return `<a href="${src}" class="media" rel="nofollow">${alt || decodeURIComponent(filename)}</a>`;
                     }
@@ -194,16 +192,6 @@ class DokuParserJS {
             {
                 pattern: /~~INFO:syntaxplugins~~/g,
                 replace: () => {
-                    const plugins = [
-                        { name: 'Structured Data Plugin', date: '2024-01-30', author: 'Andreas Gohr', desc: 'Add and query structured data in your wiki', url: 'data' },
-                        { name: 'DokuTeaser Plugin', date: '2016-01-16', author: 'Andreas Gohr', desc: 'A plugin for internal use on dokuwiki.org only', url: 'dokuteaserplugin' },
-                        { name: 'Gallery Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Creates a gallery of images from a namespace or RSS/ATOM feed', url: 'gallery' },
-                        { name: 'Info Plugin', date: '2020-06-04', author: 'Andreas Gohr', desc: 'Displays information about various DokuWiki internals', url: 'info' },
-                        { name: 'Repository plugin', date: '2024-02-09', author: 'Andreas Gohr/Håkan Sandell', desc: 'Helps organizing the plugin and template repository', url: 'repository' },
-                        { name: 'Translation Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Supports the easy setup of a multi-language wiki.', url: 'translation' },
-                        { name: 'PHPXref Plugin', date: '2024-04-30', author: 'Andreas Gohr', desc: 'Makes linking to a PHPXref generated API doc easy.', url: 'xref' }
-                    ];
-                    return `<ul>${plugins.map(p => `<li class="level1"><div class="li"><a href="https://www.dokuwiki.org/plugin:${p.url}" class="urlextern" rel="nofollow">${p.name}</a> <em>${p.date}</em> by <a href="mailto:${p.author.includes('Håkan') ? 'sandell [dot] hakan [at] gmail [dot] com' : 'andi [at] splitbrain [dot] org'}" class="mail">${p.author}</a><br>${p.desc}</div></li>`).join('')}</ul>`;
                 }
             },
             ...(this.typography ? [
@@ -251,12 +239,9 @@ class DokuParserJS {
         if (isStartPage) target = target.slice(0, -1);
         let resolved;
 
-        // Handle absolute paths starting with ':'
         if (target.startsWith(':')) {
             resolved = target.substring(1);
-        }
-        // Handle relative paths with '..'
-        else if (target.startsWith('..')) {
+        } else if (target.startsWith('..')) {
             let tempTarget = target;
             let levels = 0;
             while (tempTarget.startsWith('..')) {
@@ -275,14 +260,10 @@ class DokuParserJS {
             }
             let parentNs = nsParts.join(':');
             resolved = parentNs ? parentNs + ':' + tempTarget : tempTarget;
-        }
-        // Handle relative paths with '.'
-        else if (target.startsWith('.')) {
+        } else if (target.startsWith('.')) {
             let tempTarget = target.substring(target.startsWith('.:') ? 2 : 1);
             resolved = currentNamespace ? currentNamespace + ':' + tempTarget : tempTarget;
-        }
-        // Handle non-absolute paths
-        else {
+        } else {
             resolved = isMedia || target.includes(':') ? target : (currentNamespace ? currentNamespace + ':' + target : target);
         }
 
@@ -291,7 +272,6 @@ class DokuParserJS {
             resolved = resolved.replace(/[^a-z0-9:-_\.]/gi, '').toLowerCase();
         }
         if (!isMedia && isStartPage && !resolved.endsWith(':start')) resolved += ':start';
-        console.log(`Resolved namespace: target=${originalTarget}, currentNamespace=${currentNamespace}, isMedia=${isMedia}, resolved=${resolved}`);
         return resolved;
     }
 
@@ -301,6 +281,7 @@ class DokuParserJS {
         let tableBuffer = [];
         let tableRowspans = [];
         let tableAlignments = [];
+        let tableAttributes = {};
         let quoteLevel = 0;
         let paragraphBuffer = [];
         let inCodeBlock = false;
@@ -326,10 +307,11 @@ class DokuParserJS {
             let trimmed = line.trim();
             if (!trimmed) {
                 if (inTable) {
-                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                    result.push(this.renderTable(tableBuffer, tableAttributes));
                     tableBuffer = [];
                     tableRowspans = [];
                     tableAlignments = [];
+                    tableAttributes = {};
                     inTable = false;
                 } else if (inCodeBlock) {
                     codeBlockBuffer.push('');
@@ -338,14 +320,33 @@ class DokuParserJS {
                     preBuffer.push('');
                     continue;
                 } else if (quoteLevel > 0 || paragraphBuffer.length > 0 || this.listStack.length > 0) {
-                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                     quoteLevel = 0;
                 }
                 continue;
             }
 
+            // Handle <table> tag for attributes
+            if (trimmed.match(/^<table\s+([^>]+)>/)) {
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
+                const match = trimmed.match(/^<table\s+([^>]+)>/);
+                tableAttributes = this.parseTableAttributes(match[1]);
+                inTable = true;
+                continue;
+            } else if (trimmed.match(/^<\/table>/)) {
+                if (inTable) {
+                    result.push(this.renderTable(tableBuffer, tableAttributes));
+                    tableBuffer = [];
+                    tableRowspans = [];
+                    tableAlignments = [];
+                    tableAttributes = {};
+                    inTable = false;
+                }
+                continue;
+            }
+
             if (trimmed.match(/^<code(?:\s+([^\s>]+))?>/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 inCodeBlock = true;
                 inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 codeBlockBuffer = [];
@@ -366,7 +367,7 @@ class DokuParserJS {
                 }
                 continue;
             } else if (trimmed.match(/^<file(?:\s+([^\s>]+))?>/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 inCodeBlock = true;
                 inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 codeBlockBuffer = [];
@@ -406,7 +407,7 @@ class DokuParserJS {
             const indent = leadingSpaces.length;
 
             if (paragraphBuffer.length > 0 && (indent >= 2 || trimmed.match(/^(?:>|={2,6}.*={2,6}|[\^|]|-{4,})$/))) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
             }
 
             if (indent >= 2 && !inCodeBlock && !inTable && (line[indent] === '*' || line[indent] === '-') && (line[indent + 1] === ' ' || line.substring(indent + 1).trim() === '')) {
@@ -464,7 +465,7 @@ class DokuParserJS {
             }
 
             if (!inCodeBlock && !inTable && indent >= 2 && !line.match(/^( {2,})([*|-]\s)/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 inPre = true;
                 inCodeSection = this.currentSection.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
                 preBuffer = [line];
@@ -528,105 +529,96 @@ class DokuParserJS {
                 }
             }
 
-            if (!inCodeSection && trimmed.match(/^[\^|]/)) {
+            if (!inCodeSection && (trimmed.match(/^[\^|]/) || inTable)) {
                 if (paragraphBuffer.length > 0 || quoteLevel > 0 || this.listStack.length > 0) {
-                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                    this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 }
-                const isHeaderRow = trimmed.match(/^\^.*\^.*\^/);
+                if (!inTable) {
+                    inTable = true;
+                    tableAlignments = [];
+                    tableRowspans = [];
+                }
+                const isHeaderRow = trimmed.match(/^\^/);
                 const sep = isHeaderRow ? '^' : '|';
                 let rawLine = trimmed.substring(1);
                 rawLine = rawLine.endsWith(sep) ? rawLine.slice(0, -1) : rawLine;
-                let cells = rawLine.split(sep).map(cell => cell.trim());
-                let cellContents = [];
-                let cellTags = [];
-                let alignments = [];
+                let cells = this.splitTableRow(rawLine, sep);
+                let row = { cells: [], isHeader: isHeaderRow, alignments: [], spans: [] };
                 try {
                     cells.forEach((cell, index) => {
+                        let content = cell.trim();
                         let align = 'leftalign';
                         if (cell.match(/^\s{2,}.*\s{2,}$/)) align = 'centeralign';
                         else if (cell.match(/^\s{2,}/)) align = 'rightalign';
                         else if (cell.match(/\s{2,}$/)) align = 'leftalign';
-                        cell = cell.trim();
-                        alignments.push(align);
-                        cellContents.push(cell);
-                        cellTags.push(isHeaderRow ? 'th' : 'td');
-                    });
-                    if (isHeaderRow) tableAlignments = alignments;
-                    if (!tableRowspans.length || tableRowspans.length !== cellContents.length) {
-                        tableRowspans = new Array(cellContents.length).fill(0);
-                    }
-                    let row = `<tr class="row${tableBuffer.length}">`;
-                    for (let j = 0; j < cellContents.length;) {
-                        if (tableRowspans[j] > 0) {
-                            tableRowspans[j]--;
-                            j++;
-                            continue;
-                        }
-                        let cell = cellContents[j];
-                        let tag = cellTags[j];
                         let colspan = 1;
-                        let k = j + 1;
-                        while (k < cellContents.length && cellContents[k] === '') {
-                            k++;
-                            colspan++;
+                        let rowspan = 1;
+                        if (content === ':::') {
+                            rowspan = 0; // Indicates spanned cell
+                        } else if (content.match(/^:+$/)) {
+                            rowspan = (content.match(/:/g) || []).length;
+                            content = '';
                         }
-                        let rowspanAttr = '';
-                        if (cell === ':::') {
-                            tableRowspans[j]--;
-                            j++;
-                            continue;
-                        } else if (cell.match(/^:+$/)) {
-                            const colons = (cell.match(/:/g) || []).length;
-                            rowspanAttr = colons > 1 ? ` rowspan="${colons}"` : '';
-                            tableRowspans[j] = colons - 1;
-                            cell = '';
+                        if (index < cells.length - 1 && cells[index + 1] === '') {
+                            colspan = 1;
+                            let k = index + 1;
+                            while (k < cells.length && cells[k] === '') {
+                                colspan++;
+                                k++;
+                            }
                         }
-                        let content = inCodeSection ? this.escapeEntities(cell) : this.applyRules(cell);
-                        const alignClass = alignments[j] || (j < tableAlignments.length ? tableAlignments[j] : 'leftalign');
-                        const classAttr = alignClass ? ` class="col${j} ${alignClass}"` : ` class="col${j}"`;
-                        const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : '';
-                        row += `<${tag}${rowspanAttr}${colspanAttr}${classAttr}>${content}</${tag}>`;
-                        j = k;
+                        content = inCodeSection ? this.escapeEntities(content) : this.applyRules(content);
+                        row.cells.push(content);
+                        row.alignments.push(align);
+                        row.spans.push({ rowspan, colspan });
+                    });
+                    if (isHeaderRow || !tableAlignments.length) {
+                        tableAlignments = row.alignments;
                     }
-                    row += '</tr>';
+                    if (!tableRowspans.length || tableRowspans.length !== row.cells.length) {
+                        tableRowspans = new Array(row.cells.length).fill(0);
+                    }
                     tableBuffer.push(row);
-                    inTable = true;
                 } catch (e) {
-                    console.error(`Error parsing table at line ${i + 1}: ${e.message}`);
-                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
-                    tableBuffer = [];
-                    tableRowspans = [];
-                    tableAlignments = [];
-                    inTable = false;
+                    console.error(`Error parsing table row at line ${i + 1}: ${e.message}`);
+                    if (tableBuffer.length > 0) {
+                        result.push(this.renderTable(tableBuffer, tableAttributes));
+                        tableBuffer = [];
+                        tableRowspans = [];
+                        tableAlignments = [];
+                        tableAttributes = {};
+                        inTable = false;
+                    }
                     continue;
                 }
-                if (i === lines.length - 1) {
-                    result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                if (i === lines.length - 1 || (lines[i + 1] && !lines[i + 1].trim().match(/^[\^|]/))) {
+                    result.push(this.renderTable(tableBuffer, tableAttributes));
                     tableBuffer = [];
                     tableRowspans = [];
                     tableAlignments = [];
+                    tableAttributes = {};
                     inTable = false;
                 }
                 continue;
             }
 
             if (inTable && !trimmed.match(/^(?:\s*[\^|].*)$/)) {
-                result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+                result.push(this.renderTable(tableBuffer, tableAttributes));
                 tableBuffer = [];
                 tableRowspans = [];
                 tableAlignments = [];
+                tableAttributes = {};
                 inTable = false;
             }
 
             if (trimmed.match(/^={2,6}.*={2,6}$/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 const equalsCount = (trimmed.match(/=/g) || []).length / 2;
                 let content = trimmed.replace(/^={2,6}/, '').replace(/={2,6}$/, '').trim();
                 content = this.applyRules(content);
                 const level = Math.max(1, Math.min(6, 6 - Math.floor(equalsCount) + 1));
                 const id = content.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
-                const sectionEditNum = result.length + 1;
-                result.push(`<div class="section_highlight_wrapper"><h${level} class="sectionedit${sectionEditNum}" id="${id}">${content}</h${level}><div class="level${level}">`);
+                result.push(`<h${level} id="${id}">${content}</h${level}><div class="level${level}">`);
                 this.currentSectionLevel = level;
                 this.currentSection = content;
                 inCodeSection = content.match(/^(Links|Tables|Quoting|No Formatting|Embedding HTML and PHP|RSS\/ATOM Feed Aggregation|Control Macros|Syntax Plugins)$/i);
@@ -634,7 +626,7 @@ class DokuParserJS {
             }
 
             if (trimmed.match(/^-{4,}$/)) {
-                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 result.push('<hr>');
                 inCodeSection = false;
                 continue;
@@ -643,7 +635,7 @@ class DokuParserJS {
             if (trimmed.match(/^\{\{.*\}\}$/) && !trimmed.match(/^\{\{rss>/)) {
                 let content = this.applyRules(trimmed);
                 result.push(`<p>${content}</p>`);
-                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+                if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
                 continue;
             }
 
@@ -652,10 +644,10 @@ class DokuParserJS {
             content = content.replace(/\\\\\s+/g, '<br>');
             content = inCodeSection ? this.escapeEntities(content) : this.applyRules(content);
             paragraphBuffer.push(content);
-            if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+            if (i === lines.length - 1) this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
         }
 
-        this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans);
+        this.flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes);
         if (inPre) {
             let preContent = preBuffer.map(l => l.replace(/^ {2,}/, '')).join('\n');
             preContent = this.escapeEntities(preContent);
@@ -680,6 +672,100 @@ class DokuParserJS {
         });
         finalResult = `<div class="page group">${finalResult}</div>`;
         return finalResult;
+    }
+
+    parseTableAttributes(attrString) {
+        const attributes = {};
+        const attrRegex = /(\w+)=(?:"([^"]*)"|'([^']*)'|(\S+))/g;
+        let match;
+        while ((match = attrRegex.exec(attrString))) {
+            const [, key, val1, val2, val3] = match;
+            attributes[key] = val1 || val2 || val3;
+        }
+        return attributes;
+    }
+
+    splitTableRow(rawLine, sep) {
+        const cells = [];
+        let current = '';
+        let inLink = false;
+        let inImage = false;
+        let linkDepth = 0;
+        let imageDepth = 0;
+
+        for (let i = 0; i < rawLine.length; i++) {
+            const char = rawLine[i];
+            if (char === '[' && rawLine[i + 1] === '[') {
+                inLink = true;
+                linkDepth++;
+                current += char;
+                continue;
+            }
+            if (char === ']' && rawLine[i + 1] === ']' && inLink) {
+                linkDepth--;
+                current += char;
+                if (linkDepth === 0) inLink = false;
+                continue;
+            }
+            if (char === '{' && rawLine[i + 1] === '{' && !inLink) {
+                inImage = true;
+                imageDepth++;
+                current += char;
+                continue;
+            }
+            if (char === '}' && rawLine[i + 1] === '}' && inImage) {
+                imageDepth--;
+                current += char;
+                if (imageDepth === 0) inImage = false;
+                continue;
+            }
+            if (char === sep && !inLink && !inImage && (i === 0 || rawLine[i - 1] !== '\\')) {
+                cells.push(current);
+                current = '';
+                continue;
+            }
+            current += char;
+        }
+        if (current !== '') cells.push(current);
+        return cells;
+    }
+
+    renderTable(tableBuffer, tableAttributes) {
+        let rowIndex = 0;
+        let tableRowspans = new Array(tableBuffer[0]?.cells.length || 0).fill(0);
+        let html = '<table class="inline"';
+        for (const [key, value] of Object.entries(tableAttributes)) {
+            html += ` ${key}="${this.escapeEntities(value)}"`;
+        }
+        html += '>';
+        for (const row of tableBuffer) {
+            html += `<tr class="row${rowIndex}">`;
+            let colIndex = 0;
+            for (let i = 0; i < row.cells.length; i++) {
+                if (tableRowspans[i] > 0) {
+                    tableRowspans[i]--;
+                    continue;
+                }
+                const content = row.cells[i];
+                const { rowspan, colspan } = row.spans[i];
+                if (rowspan === 0) {
+                    colIndex++;
+                    continue;
+                }
+                const tag = row.isHeader ? 'th' : 'td';
+                const alignClass = row.alignments[i] || (i < tableAlignments.length ? tableAlignments[i] : 'leftalign');
+                const classAttr = `class="col${colIndex} ${alignClass}"`;
+                const rowspanAttr = rowspan > 1 ? ` rowspan="${rowspan}"` : '';
+                const colspanAttr = colspan > 1 ? ` colspan="${colspan}"` : '';
+                html += `<${tag} ${classAttr}${rowspanAttr}${colspanAttr}>${content}</${tag}>`;
+                tableRowspans[i] = rowspan - 1;
+                colIndex += colspan;
+            }
+            html += '</tr>';
+            rowIndex++;
+        }
+        html += '</table>';
+        return html;
     }
 
     applyRules(content) {
@@ -713,7 +799,7 @@ class DokuParserJS {
             .replace(/'/g, '&#39;');
     }
 
-    flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans) {
+    flushBlocks(result, tableBuffer, quoteLevel, paragraphBuffer, codeBlockBuffer, tableRowspans, tableAttributes) {
         if (this.listStack.length > 0) {
             while (this.listStack.length > 0) {
                 result.push('</li>');
@@ -723,9 +809,10 @@ class DokuParserJS {
             }
         }
         if (tableBuffer.length > 0) {
-            result.push(`<div class="table sectionedit${result.length + 1}"><table class="inline">${tableBuffer.join('')}</table></div>`);
+            result.push(this.renderTable(tableBuffer, tableAttributes));
             tableBuffer.length = 0;
             tableRowspans.length = 0;
+            tableAttributes = {};
         }
         if (quoteLevel > 0) {
             while (quoteLevel > 0) {
