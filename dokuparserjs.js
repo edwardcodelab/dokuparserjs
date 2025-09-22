@@ -771,6 +771,7 @@ class DokuParserJS {
       }
 
       // Handle indented code blocks
+      const indent = line.match(/^(\s*)/)[1].length;
       if (indent >= 2 && !inCodeBlock && !inTable && !line.match(/^ {2,}[* -]\s/)) {
         this.flushBlocks(result, tableLines, quoteLevel, paragraphBuffer, codeBlockBuffer, codeLang);
         inPre = true;
@@ -917,6 +918,9 @@ class DokuParserJS {
     if (finalResult.includes('[LINK_') || finalResult.includes('[MEDIA_') || finalResult.includes('[RSS_')) {
       console.warn('Warning: Unresolved placeholders in output');
     }
+    // Clear placeholders to prevent memory leaks
+    this.linkPlaceholders = [];
+    this.nowikiPlaceholders = [];
     return `<div class="page group">${finalResult}</div>`;
   }
 
@@ -1020,9 +1024,21 @@ class DokuParserJS {
       }
     }
     if (paragraphBuffer.length > 0) {
-      let paraContent = paragraphBuffer.join(' ');
+      // Process each line to preserve line breaks
+      let paraContent = paragraphBuffer
+        .map((line, index) => {
+          // Apply line break rules
+          let processed = line.trim() ? this.replacePlaceholders(line) : '';
+          // Add <br /> for lines ending with \\ when not the last line
+          if (line.match(/\\\\\s*$/) && index < paragraphBuffer.length - 1) {
+            processed += '<br />';
+          }
+          return processed;
+        })
+        .filter(line => line.trim())
+        .join('\n');
       if (paraContent.trim()) {
-        result.push(`<p>${this.replacePlaceholders(paraContent)}</p>`);
+        result.push(`<p>${paraContent}</p>`);
       }
       paragraphBuffer.length = 0;
     }
