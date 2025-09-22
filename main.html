@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DokuWiki Reader</title>
+    <!-- Using Tailwind CDN for development; for production, install Tailwind CSS locally (see https://tailwindcss.com/docs/installation) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/feather-icons/dist/feather.min.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0z' fill='%23ccc'/></svg>">
     <style>
         .sidebar {
             scrollbar-width: thin;
@@ -81,6 +83,17 @@
         #content .fn { margin: 0.5em 0; }
         #content .fn sup { font-size: 80%; }
         #content .fn a.fn_bot { color: #0000ff; text-decoration: none; }
+        #content .toc { margin: 1em 0; padding: 1em; background: #f7f9fa; border: 1px solid #d7d9da; border-radius: 4px; }
+        #content .tocheader { font-weight: bold; font-size: 1.2em; margin-bottom: 0.5em; }
+        #content .toc ul { list-style: none; margin: 0; padding: 0; }
+        #content .toc li { margin: 0.2em 0; }
+        #content .toc li.level1 { margin-left: 0; }
+        #content .toc li.level2 { margin-left: 1.5em; }
+        #content .toc li.level3 { margin-left: 3em; }
+        #content .toc li.level4 { margin-left: 4.5em; }
+        #content .toc li.level5 { margin-left: 6em; }
+        #content .toc a { color: #0000ff; text-decoration: none; }
+        #content .toc a:hover { text-decoration: underline; }
         .directory .children { display: none; }
         .directory.expanded .children { display: block; }
         #search-input { width: 100%; padding: 0.5em 2.5em 0.5em 0.5em; border: 1px solid #4b5563; border-radius: 4px; background: #374151; color: #e5e7eb; }
@@ -104,7 +117,7 @@
         </div>
         <div class="p-4 border-b border-gray-700">
             <div class="relative">
-                <input type="text" id="search-input" placeholder="Search pages..." 
+                <input type="text" id="search-input" placeholder="Search pages..."
                     class="w-full bg-gray-700 text-gray-200 px-4 py-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <i data-feather="search" class="absolute right-3 top-2.5 text-gray-400"></i>
             </div>
@@ -147,7 +160,6 @@
         const DEFAULT_PAGE = 'data/pages/wiki/welcome.txt';
         let fileTreeData = []; // Cache all .txt files recursively
         let directoryData = []; // Cache directory paths
-
         async function getDirectoryContents(dirname) {
             console.log(`Fetching directory: ${dirname}`);
             try {
@@ -173,7 +185,6 @@
                 return [];
             }
         }
-
         async function collectAllFiles(dirname, parentPath = '') {
             const contents = await getDirectoryContents(dirname);
             const files = [];
@@ -190,7 +201,6 @@
             }
             return files;
         }
-
         async function buildTreeAsync(dirname, parentUl) {
             try {
                 if (!fileTreeData.length) {
@@ -199,7 +209,6 @@
                     console.log('Collected all files:', fileTreeData);
                     console.log('Collected directories:', directoryData);
                 }
-                
                 const tree = {};
                 fileTreeData.forEach(file => {
                     const parts = file.displayPath.split('/');
@@ -213,7 +222,6 @@
                         }
                     });
                 });
-
                 parentUl.innerHTML = '';
                 function renderTree(node, ul, prefix = '') {
                     Object.entries(node).sort((a, b) => a[0].localeCompare(b[0])).forEach(([name, data]) => {
@@ -247,15 +255,12 @@
                 parentUl.innerHTML += `<li class="text-red-500 px-4 py-2">Error loading ${dirname}: ${error.message}</li>`;
             }
         }
-
         function renderSearchResults(filter = '') {
             const resultsDiv = document.getElementById('search-results');
             resultsDiv.innerHTML = '';
             if (!filter) return;
-
             const filteredFiles = fileTreeData.filter(file => file.displayPath.toLowerCase().includes(filter.toLowerCase()));
             const filteredDirs = directoryData.filter(dir => dir.displayPath.toLowerCase().includes(filter.toLowerCase()));
-            
             if (filteredFiles.length || filteredDirs.length) {
                 const ul = document.createElement('ul');
                 ul.className = 'space-y-1';
@@ -285,18 +290,15 @@
                 resultsDiv.innerHTML = '<p class="px-4 py-2 text-gray-400">No results found</p>';
             }
         }
-
         const fileTree = document.getElementById('file-tree');
         const searchInput = document.getElementById('search-input');
         buildTreeAsync(BASE_PATH, fileTree).then(() => {
             loadPage(DEFAULT_PAGE);
         });
-
         searchInput.addEventListener('input', (e) => {
             const filter = e.target.value.trim();
             renderSearchResults(filter);
         });
-
         fileTree.addEventListener('click', async (e) => {
             if (e.target.tagName === 'A' && e.target.dataset.path && e.target.dataset.path.endsWith('.txt')) {
                 e.preventDefault();
@@ -308,7 +310,6 @@
                 await loadPage(path);
             }
         });
-
         document.getElementById('content').addEventListener('click', async (e) => {
             if (e.target.tagName === 'A' && (e.target.classList.contains('wikilink1') || e.target.classList.contains('wikilink2'))) {
                 e.preventDefault();
@@ -324,12 +325,10 @@
                 }
             }
         });
-
         document.getElementById('mobile-menu-button').addEventListener('click', () => {
             const sidebar = document.querySelector('.sidebar');
             sidebar.classList.toggle('active');
         });
-
         async function loadPage(path) {
             try {
                 const decodedPath = decodeURIComponent(path);
@@ -351,15 +350,13 @@
                     mediaBasePath: '/data/media/',
                     pagesBasePath: '/data/pages/',
                     useTxtExtension: true,
-                    useDokuWikiPaths: false
+                    useEmoji: true,
+                    toc: true
                 });
                 const html = parser.parse(text);
                 console.log('Parsed HTML:', html.substring(0, 100) + '...');
-                const cleanHtml = html
-                    .replace(/<div id="dw__toc"[\s\S]*?<\/div>/, '')
-                    .replace(/<div class="secedit[\s\S]*?Edit[\s\S]*?<\/div>/g, '');
-                document.getElementById('content').innerHTML = cleanHtml;
-                console.log('CSS applied to content:', document.getElementById('content').innerHTML.substring(0, 100) + '...');
+                document.getElementById('content').innerHTML = html;
+                console.log('Content rendered:', document.getElementById('content').innerHTML.substring(0, 100) + '...');
             } catch (error) {
                 console.error('Error processing page:', error);
                 document.getElementById('content').innerHTML = `<p class="text-red-600">Error loading ${path}: ${error.message}</p>`;
